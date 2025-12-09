@@ -32,3 +32,16 @@ class MediaWikiClient:
     async def create_or_edit_page(self, title: str, text: str, summary: str):
         # Placeholder for full edit workflow
         pass
+
+    async def get_all_pages(self, limit: int = 500) -> list[str]:
+        """Returns a list of all page titles in the main namespace."""
+        params = {
+            "action": "query",
+            "list": "allpages",
+            "aplimit": limit,
+            "apnamespace": 0,  # Main namespace
+            "format": "json"
+        }
+        data = await self._request(params)
+        pages = data.get("query", {}).get("allpages", [])
+        return [p["title"] for p in pages]

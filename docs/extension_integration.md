@@ -36,8 +36,12 @@ Send a user message to get an AI response that may utilize wiki tools.
 ```json
 {
   "messages": [
-    {"role": "user", "content": "What is the population of New York?"}
+    {
+      "role": "user",
+      "content": "Hello, who are you?"
+    }
   ],
+  "session_id": "optional-uuid-v4-for-history",
   "max_tokens": 512
 }
 ```
@@ -46,8 +50,14 @@ Send a user message to get an AI response that may utilize wiki tools.
 ```json
 {
   "messages": [
-    {"role": "user", "content": "..."},
-    {"role": "assistant", "content": "The population is..."}
+    {
+      "role": "user",
+      "content": "Hello, who are you?"
+    },
+    {
+      "role": "assistant",
+      "content": "I am the Wiki Assistant..."
+    }
   ],
   "used_tools": []
 }

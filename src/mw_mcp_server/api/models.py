@@ -7,6 +7,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
+    session_id: Optional[str] = None
     max_tokens: Optional[int] = 512
     tools_mode: str = "auto"
 

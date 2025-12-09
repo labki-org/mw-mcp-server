@@ -9,16 +9,27 @@ class LLMClient:
     async def chat(
         self,
         system_prompt: str,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] | None = None,
         temperature: float = 0.2,
-    ) -> str:
-        # Defaulting to gpt-4o-mini as a modern efficient model
+    ) -> Dict[str, Any]:
+        """
+        Returns the raw message dict from OpenAI, e.g.:
+        {
+            "role": "assistant",
+            "content": "...",
+            "tool_calls": [...]
+        }
+        """
         payload = {
             "model": "gpt-4o-mini",
             "messages": [{"role": "system", "content": system_prompt}] + messages,
             "temperature": temperature,
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        if tools:
+            payload["tools"] = tools
+
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 json=payload,
@@ -26,4 +37,4 @@ class LLMClient:
             )
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        return data["choices"][0]["message"]
