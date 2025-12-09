@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+httpx
+pyjwt
+numpy
+faiss-cpu

@@ -1,0 +1,24 @@
+[project]
+name = "mw-mcp-server"
+version = "0.1.0"
+description = "MCP server for MediaWiki interactions"
+authors = [
+    { name = "User", email = "user@example.com" }
+]
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "httpx",
+    "pyjwt",
+    "numpy",
+    "faiss-cpu",
+]
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
