@@ -39,3 +39,17 @@ class EditRequest(BaseModel):
 class EditResponse(BaseModel):
     success: bool
     new_rev_id: int | None
+
+class EmbeddingUpdatePageRequest(BaseModel):
+    title: str
+    content: str
+    last_modified: str | None = None
+
+class EmbeddingDeletePageRequest(BaseModel):
+    title: str
+
+class EmbeddingStatsResponse(BaseModel):
+    total_vectors: int
+    total_pages: int
+    embedded_pages: List[str]
+    page_timestamps: Dict[str, str] = {}

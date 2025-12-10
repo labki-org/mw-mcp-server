@@ -5,3 +5,4 @@ class IndexedDocument(BaseModel):
     section_id: str | None = None
     text: str
     namespace: int
+    last_modified: str | None = None
