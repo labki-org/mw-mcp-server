@@ -32,7 +32,13 @@ cp .env.example .env
 | `MW_BOT_USERNAME` | Bot username for edits |
 | `MW_BOT_PASSWORD` | Bot password |
 | `OPENAI_API_KEY` | Key for LLM and Embeddings |
-| `JWT_SECRET` | Shared secret for verifying tokens from the extension |
+| `JWT_MW_TO_MCP_SECRET` | Secret for verifying JWTs FROM MWAssistant extension (64+ chars) |
+| `JWT_MCP_TO_MW_SECRET` | Secret for signing JWTs TO MediaWiki extension (64+ chars) |
+
+**Authentication:** This service uses bidirectional short-lived (30-second) JWT authentication:
+- **Incoming (MW → MCP)**: Verifies JWTs from MWAssistant using `JWT_MW_TO_MCP_SECRET`
+- **Outgoing (MCP → MW)**: Generates JWTs for MediaWiki requests using `JWT_MCP_TO_MW_SECRET`
+
 
 ### Running Locally
 
@@ -53,7 +59,7 @@ cp .env.example .env
    ```
 2. Run the container:
    ```bash
-   docker run -p 8000:8000 --env-file .env mw-mcp-server
+   docker run -p 8000:8000 --env-file .env --name mw-mcp-server --rm mw-mcp-server
    ```
 
 ## Development

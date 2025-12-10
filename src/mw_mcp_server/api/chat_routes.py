@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from .models import ChatRequest, ChatResponse, ChatMessage
-from ..auth.security import get_current_user
+from ..auth.security import verify_mw_to_mcp_jwt, require_scopes
+from ..auth.models import UserContext
 from ..llm.client import LLMClient
 from ..tools import wiki_tools, search_tools
 from ..tools.definitions import TOOL_DEFINITIONS
@@ -11,7 +12,7 @@ import json
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 @router.post("/", response_model=ChatResponse)
-async def chat(req: ChatRequest, user = Depends(get_current_user)):
+async def chat(req: ChatRequest, user: UserContext = Depends(require_scopes("chat_completion"))):
     print(f"DEBUG: Incoming Chat Request. Session ID: {req.session_id}, Messages: {len(req.messages)}")
     llm = LLMClient()
     system_prompt = (

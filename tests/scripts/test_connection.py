@@ -16,20 +16,29 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SERVER_URL = "http://localhost:8000"
-JWT_SECRET = os.getenv("JWT_SECRET", "some-long-random-secret")
+JWT_MW_TO_MCP_SECRET = os.getenv("JWT_MW_TO_MCP_SECRET", "8n7yHEg3UttL-lEOKASg-dS_xkU0gTuqGLn7zvhg4Uh-x52rtA0Zh13WJmGd8ojDjxXJB7qR9U")
 JWT_ALGO = os.getenv("JWT_ALGO", "HS256")
 
-def create_token():
+def create_token(scopes=None):
+    if scopes is None:
+        scopes = ["chat_completion", "search", "smw_query", "edit_page"]
+        
+    now = int(time.time())
     payload = {
-        "sub": "TestUser",
+        "iss": "MWAssistant",
+        "aud": "mw-mcp-server",
+        "iat": now,
+        "exp": now + 30,
+        "user": "TestUser",
         "roles": ["user"],
-        "client_id": "test_script",
-        "iat": int(time.time())
+        "scope": scopes,
+        "client_id": "test_script"
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+    return jwt.encode(payload, JWT_MW_TO_MCP_SECRET, algorithm=JWT_ALGO)
+
 
 def test_smw_query():
-    token = create_token()
+    token = create_token(scopes=["smw_query"])
     headers = {"Authorization": f"Bearer {token}"}
     
     # Simple query that should return something or empty, but not error if connected
@@ -39,7 +48,7 @@ def test_smw_query():
     }
     
     print(f"Testing connectivity to {SERVER_URL}...")
-    print(f"Using JWT with secret: {JWT_SECRET[:5]}...")
+    # print(f"Using JWT with secret: {JWT_MW_TO_MCP_SECRET[:5]}...")
     
     try:
         resp = httpx.post(
@@ -62,7 +71,7 @@ def test_smw_query():
         print(f"An error occurred: {e}")
 
 def test_chat():
-    token = create_token()
+    token = create_token(scopes=["chat_completion"])
     headers = {"Authorization": f"Bearer {token}"}
     
     payload = {
@@ -91,9 +100,10 @@ def test_chat():
         print(f"Chat test error: {e}")
 
 def test_session_history():
-    token = create_token()
+    token = create_token(scopes=["chat_completion"])
     headers = {"Authorization": f"Bearer {token}"}
     session_id = "test-session-123"
+
     
     print(f"\nTesting Session History (Session ID: {session_id})...")
     
