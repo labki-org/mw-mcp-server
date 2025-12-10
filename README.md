@@ -51,7 +51,16 @@ cp .env.example .env
    uvicorn mw_mcp_server.main:app --reload
    ```
 
-### Running with Docker
+### Running with Docker (Recommended)
+This uses `docker-compose` to automatically handle port mapping and **persistent data storage** for vector embeddings.
+
+1. Run the server:
+   ```bash
+   docker-compose up --build
+   ```
+
+### Running with Docker (Manual)
+If you prefer not to use docker-compose, you must manually mount the data volume to preserve embeddings.
 
 1. Build the image:
    ```bash
@@ -59,7 +68,12 @@ cp .env.example .env
    ```
 2. Run the container:
    ```bash
-   docker run -p 8000:8000 --env-file .env --name mw-mcp-server --rm mw-mcp-server
+   docker run -p 8000:8000 \
+     --env-file .env \
+     -v "$(pwd)/data:/app/data" \
+     --name mw-mcp-server \
+     --rm \
+     mw-mcp-server
    ```
 
 ## Development

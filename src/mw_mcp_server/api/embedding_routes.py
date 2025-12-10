@@ -35,8 +35,8 @@ router = APIRouter(prefix="/embeddings", tags=["embeddings"])
 
 def _chunk_text(text: str, min_length: int = 50) -> List[str]:
     """
-    Split text into paragraph-sized chunks suitable for embedding.
-
+    Return the full text as a single chunk if it meets minimum length requirements.
+    
     Parameters
     ----------
     text : str
@@ -47,10 +47,12 @@ def _chunk_text(text: str, min_length: int = 50) -> List[str]:
     Returns
     -------
     List[str]
-        Filtered list of text chunks.
+        List containing the single trimmed text, or empty list if too short.
     """
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    return [p for p in paragraphs if len(p) >= min_length]
+    trimmed = text.strip()
+    if len(trimmed) >= min_length:
+        return [trimmed]
+    return []
 
 
 def _build_documents(
