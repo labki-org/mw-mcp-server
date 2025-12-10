@@ -10,3 +10,6 @@ app.include_router(smw_routes.router)
 app.include_router(action_routes.router)
 app.include_router(health_routes.router)
 app.include_router(embedding_routes.router)
+
+from .core.errors import unhandled_exception_handler
+app.add_exception_handler(Exception, unhandled_exception_handler)
