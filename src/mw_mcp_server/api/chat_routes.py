@@ -140,7 +140,7 @@ async def chat(
     # -------------------------------------------------------------
     # We deliberately inject this into the system prompt to ground the LLM immediately.
     # To prevent context overflow on massive wikis, we cap the list.
-    SCHEMA_CAP = 50 
+    SCHEMA_CAP = 100 
     
     # NS_CATEGORY = 14, NS_PROPERTY = 102
     cats = faiss_index.get_pages_by_namespace(14)
