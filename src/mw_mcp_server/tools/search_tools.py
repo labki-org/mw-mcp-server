@@ -14,7 +14,9 @@ Responsibilities
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Any
+from ..wiki.api_client import MediaWikiClient
+from .wiki_tools import mw_client
 
 from ..embeddings.embedder import Embedder
 from ..embeddings.index import FaissIndex
@@ -121,16 +123,6 @@ async def tool_vector_search(
     List[ToolSearchResult]
         Filtered, ranked results with text snippets.
     """
-
-    # -------------------------------------------------------------
-    # Validate FAISS index availability
-    # -------------------------------------------------------------
-    if (
-        not getattr(faiss_index, "index", None)
-        or faiss_index.index.ntotal == 0
-    ):
-        return []
-
     # -------------------------------------------------------------
     # Embed the query text
     # -------------------------------------------------------------
@@ -180,3 +172,40 @@ async def tool_vector_search(
             ) from exc
 
     return results
+
+
+# ---------------------------------------------------------------------
+# Standard Keyword Search Tool
+# ---------------------------------------------------------------------
+
+async def tool_search_pages(
+    query: str,
+    limit: int = 10,
+    client: Optional[MediaWikiClient] = None,
+    user: Optional[UserContext] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Perform a standard MediaWiki keyword search/list=search.
+
+    Parameters
+    ----------
+    query : str
+        Keyword search query.
+    
+    limit : int
+        Max results.
+
+    client : MediaWikiClient
+        Optional client override.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of search results with keys: title, snippet, size, wordcount, etc.
+    """
+    client = client or mw_client
+    
+    # We must ensure we have a client instance since mw_client might be initialized without async loop
+    # actually mw_client is global at module level.
+    
+    return await client.search_pages(query, limit=limit, user=user)

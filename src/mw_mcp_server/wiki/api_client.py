@@ -253,4 +253,44 @@ class MediaWikiClient:
 
         return titles
 
+    async def search_pages(
+        self, query: str, limit: int = 10, user: Optional[UserContext] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Perform a standard MediaWiki search via mwassistant-keyword-search.
+        Allows impersonating a user given by 'user.username' and returns rich results.
+
+        Parameters
+        ----------
+        query : str
+            Search query string.
+        
+        limit : int
+            Maximum number of results to return.
+
+        user : Optional[UserContext]
+            User context for impersonation.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of search results with keys: title, snippet, size, wordcount, etc.
+        """
+        params = {
+            "action": "mwassistant-keyword-search",
+            "query": query,
+            "limit": limit,
+            "format": "json",
+        }
+
+        if user and user.username:
+            params["username"] = user.username
+
+        # scope "search" is required by the endpoint configuration
+        data = await self._request(params, scopes=["search"])
+        
+        # The result is nested under 'mwassistant-keyword-search' key
+        # We expect a list of dicts: {title, snippet, size, wordcount, timestamp}
+        return data.get("mwassistant-keyword-search", [])
+
 

@@ -77,6 +77,7 @@ class FaissIndex:
         self._doc_map: Dict[int, IndexedDocument] = {}
         self._next_id: int = 0
 
+        self._next_id: int = 0
         self._lock = RLock()
 
     # ------------------------------------------------------------------
@@ -225,7 +226,7 @@ class FaissIndex:
             faiss.normalize_L2(q)
 
             scores, idxs = self._index.search(q, k)
-
+            
             results: List[Tuple[IndexedDocument, float]] = []
 
             for score, idx in zip(scores[0], idxs[0]):

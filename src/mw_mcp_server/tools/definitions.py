@@ -23,6 +23,7 @@ from typing import Dict, List, Any, Final
 TOOL_MW_GET_PAGE: Final[str] = "mw_get_page"
 TOOL_MW_RUN_SMW_ASK: Final[str] = "mw_run_smw_ask"
 TOOL_MW_VECTOR_SEARCH: Final[str] = "mw_vector_search"
+TOOL_MW_SEARCH_PAGES: Final[str] = "mw_search_pages"
 
 
 # ---------------------------------------------------------------------
@@ -105,6 +106,35 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                         "minimum": 1,
                         "maximum": 50,
                         "default": 5,
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": TOOL_MW_SEARCH_PAGES,
+            "description": (
+                "Performs a standard MediaWiki keyword search (list=search). "
+                "Use this to find pages by title or keyword when you need exact matches or standard wiki search behavior."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keyword search query.",
+                        "minLength": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return.",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10,
                     },
                 },
                 "required": ["query"],

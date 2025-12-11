@@ -18,7 +18,9 @@ from __future__ import annotations
 from typing import Any, Dict, Callable, Awaitable
 
 from .wiki_tools import tool_get_page, tool_run_smw_ask
-from .search_tools import tool_vector_search
+from .wiki_tools import tool_get_page, tool_run_smw_ask
+from .search_tools import tool_vector_search, tool_search_pages
+from .schema_tools import tool_get_categories, tool_get_properties, tool_list_pages
 from .schema_tools import tool_get_categories, tool_get_properties, tool_list_pages
 from ..auth.models import UserContext
 from ..embeddings.embedder import Embedder
@@ -81,6 +83,34 @@ async def _handle_vector_search(
         faiss_index=faiss_index,
         embedder=embedder,
         k=k,
+    )
+
+
+    return await tool_vector_search(
+        query=query,
+        user=user,
+        faiss_index=faiss_index,
+        embedder=embedder,
+        k=k,
+    )
+
+
+async def _handle_search_pages(
+    args: Dict[str, Any],
+    user: UserContext,
+    faiss_index: FaissIndex,
+    embedder: Embedder,
+) -> Any:
+    query = args.get("query")
+    if not query:
+        raise ValueError("mw_search_pages requires 'query' argument.")
+
+    limit = args.get("limit", 10)
+
+    return await tool_search_pages(
+        query=query,
+        limit=limit,
+        user=user,
     )
 
 
@@ -164,6 +194,7 @@ TOOL_REGISTRY: Dict[str, ToolHandler] = {
     "mw_get_page": _handle_get_page,
     "mw_run_smw_ask": _handle_smw_ask,
     "mw_vector_search": _handle_vector_search,
+    "mw_search_pages": _handle_search_pages,
     "mw_get_categories": _handle_get_categories,
     "mw_get_properties": _handle_get_properties,
     "mw_list_pages": _handle_list_pages,

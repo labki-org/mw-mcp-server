@@ -34,9 +34,7 @@ class ToolSearchResult(BaseModel):
     title: str = Field(..., min_length=1)
     section_id: Optional[str] = None
     score: float = Field(..., ge=0.0)
-    section_id: Optional[str] = None
-    score: float = Field(..., ge=0.0)
-    # text removed - LLM must fetch page content explicitly
+    text: Optional[str] = None
 
     model_config = ConfigDict(extra="forbid")
 
