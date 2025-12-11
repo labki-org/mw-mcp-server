@@ -33,7 +33,7 @@ router = APIRouter(prefix="/embeddings", tags=["embeddings"])
 # Helper Functions
 # ---------------------------------------------------------------------
 
-def _chunk_text(text: str, min_length: int = 50) -> List[str]:
+def _chunk_text(text: str, min_length: int = 10) -> List[str]:
     """
     Return the full text as a single chunk if it meets minimum length requirements.
     
@@ -50,9 +50,22 @@ def _chunk_text(text: str, min_length: int = 50) -> List[str]:
         List containing the single trimmed text, or empty list if too short.
     """
     trimmed = text.strip()
-    if len(trimmed) >= min_length:
+    if len(trimmed) < min_length:
+        return []
+
+    # Simple constraint: OpenAI text-embedding-3-large limit is 8191 tokens.
+    # ~4 chars per token -> ~32k chars. We use 25k chars as a safe upper bound.
+    MAX_CHUNK_SIZE = 25000
+    
+    if len(trimmed) <= MAX_CHUNK_SIZE:
         return [trimmed]
-    return []
+
+    chunks = []
+    # Naive chunking by length
+    for i in range(0, len(trimmed), MAX_CHUNK_SIZE):
+        chunks.append(trimmed[i : i + MAX_CHUNK_SIZE])
+    
+    return chunks
 
 
 def _build_documents(

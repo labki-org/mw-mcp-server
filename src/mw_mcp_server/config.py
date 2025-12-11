@@ -164,7 +164,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="forbid",          # 🔒 No silent misconfiguration
-        case_sensitive=True,
+        case_sensitive=False,
     )
 
 

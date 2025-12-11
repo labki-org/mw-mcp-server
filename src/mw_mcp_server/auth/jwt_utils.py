@@ -48,9 +48,9 @@ def _validate_jwt_config() -> None:
             "jwt_mcp_to_mw_secret is not configured. Cannot generate JWT."
         )
 
-    if settings.JWT_TTL <= 0:
+    if settings.jwt_ttl_seconds <= 0:
         raise JWTConfigurationError(
-            f"JWT_TTL must be a positive integer; got {settings.JWT_TTL}"
+            f"JWT_TTL must be a positive integer; got {settings.jwt_ttl_seconds}"
         )
 
 
@@ -86,14 +86,14 @@ def create_mcp_to_mw_jwt(scopes: List[str]) -> str:
         "iss": "mw-mcp-server",
         "aud": "MWAssistant",           # Must match the MW extension's expected audience
         "iat": now,                    # Issued at
-        "exp": now + settings.JWT_TTL, # Short TTL for safety
+        "exp": now + settings.jwt_ttl_seconds, # Short TTL for safety
         "scope": scopes,               # Scope-based capabilities
         # NOTE: Additional claims like jti could be added for replay protection
     }
 
     # Signing key and algorithm
-    secret = settings.jwt_mcp_to_mw_secret
-    algo = settings.JWT_ALGO
+    secret = settings.jwt_mcp_to_mw_secret.get_secret_value()
+    algo = settings.jwt_algo
 
     try:
         token = jwt.encode(payload, secret, algorithm=algo)

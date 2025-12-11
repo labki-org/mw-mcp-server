@@ -51,7 +51,7 @@ def _validate_jwt_config() -> None:
     """
     if not settings.jwt_mw_to_mcp_secret:
         raise JWTVerificationError("Missing jwt_mw_to_mcp_secret in configuration.")
-    if not settings.JWT_ALGO:
+    if not settings.jwt_algo:
         raise JWTVerificationError("Missing JWT_ALGO in configuration.")
 
 
@@ -72,8 +72,8 @@ def _decode_mw_token(token: str) -> dict:
 
     return jwt.decode(
         token,
-        settings.jwt_mw_to_mcp_secret,
-        algorithms=[settings.JWT_ALGO],
+        settings.jwt_mw_to_mcp_secret.get_secret_value(),
+        algorithms=[settings.jwt_algo],
         audience="mw-mcp-server",
         issuer="MWAssistant",
         options={

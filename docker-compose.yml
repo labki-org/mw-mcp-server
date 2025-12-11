@@ -17,7 +17,7 @@ services:
 
     volumes:
       # Persistent FAISS index + metadata
-      - ./data:/app/data:rw
+      - mw_mcp_data:/app/data
 
     # -------------------------------
     # Security Hardening
@@ -49,3 +49,6 @@ services:
     #     limits:
     #       cpus: "2.0"
     #       memory: 4G
+
+volumes:
+  mw_mcp_data:
