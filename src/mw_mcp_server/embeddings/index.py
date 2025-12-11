@@ -241,6 +241,31 @@ class FaissIndex:
 
             return results
 
+    def get_pages_by_namespace(
+        self,
+        namespace: Optional[int] = None,
+        pattern: Optional[str] = None,
+    ) -> List[str]:
+        """
+        Return a list of page titles.
+        
+        If namespace is provided, filters by that namespace ID.
+        If namespace is None, searches all indexed pages.
+        """
+        with self._lock:
+            matches = set()
+            for doc in self._doc_map.values():
+                if namespace is not None and doc.namespace != namespace:
+                    continue
+                
+                # Apply optional pattern filter
+                if pattern and pattern.lower() not in doc.page_title.lower():
+                    continue
+                
+                matches.add(doc.page_title)
+            
+            return sorted(matches)
+
     def get_stats(self) -> dict:
         """
         Return index statistics for diagnostics.

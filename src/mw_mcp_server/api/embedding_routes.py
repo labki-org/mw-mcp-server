@@ -140,7 +140,7 @@ async def update_page_embedding(
         title=req.title,
         chunks=text_chunks,
         last_modified=req.last_modified,
-        namespace=0,
+        namespace=req.namespace,
     )
 
     # -------------------------------------------------------------

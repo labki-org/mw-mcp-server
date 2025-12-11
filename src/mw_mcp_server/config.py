@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     )
 
     openai_model: str = Field(
-        default="gpt-4o-mini",
+        default="gpt-5.1",
         min_length=1,
         description="Default chat model for LLM completions.",
     )

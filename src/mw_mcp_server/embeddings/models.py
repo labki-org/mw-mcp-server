@@ -35,9 +35,8 @@ class IndexedDocument(BaseModel):
     )
 
     text: str = Field(
-        ...,
-        min_length=1,
-        description="Raw text content for this embedded chunk.",
+        default="",
+        description="Raw text content (optional/deprecated for storage).",
     )
 
     namespace: int = Field(
@@ -56,3 +55,18 @@ class IndexedDocument(BaseModel):
         frozen=True,            # Make instances immutable once created
         arbitrary_types_allowed=False,
     )
+
+    def model_dump(self, **kwargs) -> Dict[str, Any]:
+        """
+        Custom dump to strictly exclude text from metadata storage.
+        """
+        # Always exclude 'text' from the output dict
+        exclude = kwargs.get("exclude", set())
+        if isinstance(exclude, set):
+            exclude.add("text")
+        else:
+            exclude = {"text"}
+            
+        kwargs["exclude"] = exclude
+        return super().model_dump(**kwargs)
+

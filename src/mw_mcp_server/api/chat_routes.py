@@ -124,33 +124,67 @@ async def chat(
     # -------------------------------------------------------------
     # llm injected via dependency
 
+    MAX_LOOPS = 10
+    loop_count = 0
+    
+    # -------------------------------------------------------------
+    # 1. & 2. & 3. LLM + Tool Loop
+    # -------------------------------------------------------------
+    # We loop until the LLM stops calling tools or we hit the limit.
+    
     # Select prompt based on context
-    system_prompt = EDITOR_SYSTEM_PROMPT if req.context == "editor" else CHAT_SYSTEM_PROMPT
+    base_prompt = EDITOR_SYSTEM_PROMPT if req.context == "editor" else CHAT_SYSTEM_PROMPT
 
-    try:
-        response_msg = await llm.chat(
-            system_prompt,
-            full_context,
-            tools=TOOL_DEFINITIONS,
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"LLM call failed: {str(exc)}",
-        ) from exc
+    # -------------------------------------------------------------
+    # Inject Schema Context (Categories & Properties)
+    # -------------------------------------------------------------
+    # We deliberately inject this into the system prompt to ground the LLM immediately.
+    # To prevent context overflow on massive wikis, we cap the list.
+    SCHEMA_CAP = 50 
+    
+    # NS_CATEGORY = 14, NS_PROPERTY = 102
+    cats = faiss_index.get_pages_by_namespace(14)
+    props = faiss_index.get_pages_by_namespace(102)
+    
+    schema_context = "\n\n[KNOWN SCHEMA ELEMENTS (Truncated if > 100)]\n"
+    schema_context += f"Categories (~{len(cats)}): " + ", ".join(cats[:SCHEMA_CAP])
+    if len(cats) > SCHEMA_CAP:
+        schema_context += "..."
+    schema_context += "\n"
+    
+    schema_context += f"Properties (~{len(props)}): " + ", ".join(props[:SCHEMA_CAP])
+    if len(props) > SCHEMA_CAP:
+        schema_context += "..."
+    schema_context += "\n[END SCHEMA CONTEXT]\n\n"
 
+    system_prompt = base_prompt + schema_context
+    
     loop_messages = list(full_context)
     used_tools_log: List[Dict[str, str]] = []
 
-    # -------------------------------------------------------------
-    # 2. Tool Loop
-    # -------------------------------------------------------------
-    tool_calls = response_msg.get("tool_calls", [])
+    while loop_count < MAX_LOOPS:
+        try:
+            response_msg = await llm.chat(
+                system_prompt,
+                loop_messages,
+                tools=TOOL_DEFINITIONS,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"LLM call failed (iteration {loop_count}): {str(exc)}",
+            ) from exc
 
-    if tool_calls:
-        # Add the assistant tool-call message
+        tool_calls = response_msg.get("tool_calls", [])
+
+        if not tool_calls:
+            # No tools called -> This is the final answer.
+            loop_messages.append(response_msg)
+            break
+        
+        # Tools were called -> Execute them and continue loop
         loop_messages.append(response_msg)
-
+        
         for tc in tool_calls:
             func_name = tc["function"]["name"]
             func_args_str = tc["function"]["arguments"]
@@ -164,6 +198,7 @@ async def chat(
                 parsed_args = json.loads(func_args_str)
             except Exception:
                 parsed_args = {}
+                # Return error to model so it can retry
                 tool_result = {"error": "Invalid JSON arguments for tool call."}
                 _append_tool_result(loop_messages, call_id, tool_result)
                 tool_log_entry["result"] = tool_result
@@ -179,30 +214,29 @@ async def chat(
                     embedder=embedder
                 )
             except Exception as exc:
+                # Return error to model
                 tool_output = {"error": f"Tool execution failed: {str(exc)}"}
 
             tool_log_entry["result"] = tool_output
             _append_tool_result(loop_messages, call_id, tool_output)
+            
+        loop_count += 1
 
-        # ---------------------------------------------------------
-        # 3. Follow-up LLM Call
-        # ---------------------------------------------------------
+    if loop_count >= MAX_LOOPS:
+        # If we exited due to limit, we might want to append a system note or just return the last state?
+        # The last message in loop_messages might be tool outputs. 
+        # We need the LLM to summarize/conclude if possible, or we just return the last thing it said.
+        # But if the LAST thing was tool outputs, the user won't see a proper response.
+        # Let's force one final generation without tools to wrap up.
         try:
             final_msg = await llm.chat(
                 system_prompt,
                 loop_messages,
-                tools=TOOL_DEFINITIONS,
+                tools=TOOL_DEFINITIONS, # Allowed, but hopefully it stops.
             )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"LLM follow-up call failed: {str(exc)}",
-            ) from exc
-
-        loop_messages.append(final_msg)
-    else:
-        # No tool calls — direct assistant response
-        loop_messages.append(response_msg)
+            loop_messages.append(final_msg)
+        except Exception:
+            pass # Use what we have
 
     # -------------------------------------------------------------
     # 4. Extract Final Answer

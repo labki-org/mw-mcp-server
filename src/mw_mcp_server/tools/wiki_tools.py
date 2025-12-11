@@ -19,6 +19,8 @@ from typing import Optional, Dict, Any
 from ..wiki.api_client import MediaWikiClient
 from ..wiki.smw_client import SMWClient
 from ..auth.models import UserContext
+from ..embeddings.index import FaissIndex
+import re
 
 
 # ---------------------------------------------------------------------
@@ -100,6 +102,7 @@ async def tool_run_smw_ask(
     ask_query: str,
     user: UserContext,
     client: Optional[SMWClient] = None,
+    faiss_index: Optional[FaissIndex] = None,
 ) -> Dict[str, Any]:
     """
     Execute a Semantic MediaWiki ASK query.
@@ -114,6 +117,9 @@ async def tool_run_smw_ask(
 
     client : SMWClient
         Optional testing override.
+        
+    faiss_index : FaissIndex
+        Optional reference to vector index for schema validation.
 
     Returns
     -------
@@ -122,6 +128,61 @@ async def tool_run_smw_ask(
     """
     if not ask_query:
         raise ValueError("mw_run_smw_ask requires a non-empty 'ask' argument.")
+
+    if faiss_index:
+        # Extract potential property names: [[Property::Value]] or [[Property::...]]
+        # Regex captures the part before '::' inside [[...]]
+        matches = re.findall(r"\[\[([^:\]]+)::", ask_query)
+        
+        # NS_PROPERTY = 102
+        known_props = set(faiss_index.get_pages_by_namespace(102)) 
+        
+        # Build lookup maps if we have data
+        if known_props:
+            known_props_lower = {p.lower(): p for p in known_props}
+            
+            for prop_ref in matches:
+                # 1. Normalize query reference to potential canonical Property page title
+                if prop_ref.lower().startswith("property:"):
+                    check_name = prop_ref
+                else:
+                    check_name = f"Property:{prop_ref}"
+
+                # 2. Check exact existence
+                if check_name in known_props:
+                    continue
+                
+                # 3. Check for "Has " prefix variation (Classic SMW pattern)
+                # If user wrote "Kiki", check "Property:Has Kiki"
+                stripped_name = prop_ref.replace("Property:", "").strip()
+                has_variation = f"Property:Has {stripped_name}"
+                
+                if has_variation in known_props:
+                    raise ValueError(
+                        f"Property '{prop_ref}' does not exist. "
+                        f"Did you mean '{has_variation}'? "
+                        "Please verify property names using `mw_get_properties`."
+                    )
+
+                # 4. Check for Case Insensitivity
+                if check_name.lower() in known_props_lower:
+                    correct = known_props_lower[check_name.lower()]
+                    raise ValueError(
+                        f"Property '{prop_ref}' does not exist (Case Mismatch). "
+                        f"Did you mean '{correct}'? MediaWiki is case-sensitive."
+                    )
+                
+                # 5. Check singular/plural (simple heuristic)
+                if stripped_name.lower().endswith("s"):
+                     singular = stripped_name[:-1]
+                     sing_var = f"Property:{singular}"
+                     if sing_var in known_props:
+                         raise ValueError(f"Property '{prop_ref}' not found. Did you mean '{sing_var}'?")
+                else:
+                     plural = stripped_name + "s"
+                     plural_var = f"Property:{plural}"
+                     if plural_var in known_props:
+                          raise ValueError(f"Property '{prop_ref}' not found. Did you mean '{plural_var}'?")
 
     client = client or smw_client
     

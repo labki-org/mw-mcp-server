@@ -112,4 +112,102 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "mw_get_categories",
+            "description": (
+                "Fetches a list of existing categories from the wiki index. "
+                "Use this to validate category names or find categories matching a pattern."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prefix": {
+                        "type": "string",
+                        "description": "Optional substring pattern to filter categories by.",
+                    },
+                    "names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of exact category names (without 'Category:' prefix) to check for existence.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return.",
+                        "default": 50,
+                        "maximum": 500,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mw_get_properties",
+            "description": (
+                "Fetches a list of existing SMW properties from the wiki index. "
+                "Use this to validate property names or find properties matching a pattern."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prefix": {
+                        "type": "string",
+                        "description": "Optional substring pattern to filter properties by.",
+                    },
+                    "names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of exact property names (without 'Property:' prefix) to check for existence.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return.",
+                        "default": 50,
+                        "maximum": 500,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mw_list_pages",
+            "description": (
+                "Lists existing pages in a specific namespace, optionally filtered by a name pattern. "
+                "Use this to explore page titles or find pages when you know the namespace but not the exact name."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "anyOf": [
+                            {"type": "integer"},
+                            {"type": "string"}
+                        ],
+                        "description": (
+                            "Client-side filter. Can be a namespace ID (e.g. 14) or name (e.g. 'Category', 'Property', 'Main'). "
+                            "If omitted, searches all namespaces."
+                        ),
+                    },
+                    "prefix": {
+                        "type": "string",
+                        "description": "Optional substring pattern to filter page titles by.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return.",
+                        "default": 50,
+                        "maximum": 500,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
