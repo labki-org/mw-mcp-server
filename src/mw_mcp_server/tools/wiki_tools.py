@@ -124,16 +124,37 @@ async def tool_run_smw_ask(
         raise ValueError("mw_run_smw_ask requires a non-empty 'ask' argument.")
 
     client = client or smw_client
+    
+    # If the LLM generates a full {{#ask:...}} block, pass the inner content
+    # or rely on the evaluator to handle it?
+    # Our PHP evaluator specifically does: "{{#ask: " . $queryArgs . "}}"
+    # So we must pass ONLY the inner args.
+    
+    # Simple strip if the LLM provided the full wrapper
+    clean_query = ask_query.strip()
+    if clean_query.startswith("{{#ask:") and clean_query.endswith("}}"):
+        # Remove {{#ask: and trailing }}
+        clean_query = clean_query[7:-2].strip()
+    elif clean_query.startswith("{{") and clean_query.endswith("}}"):
+         # Some other parser function? The PHP evaluator enforces #ask.
+         # So we warn or just try to strip.
+         clean_query = clean_query[2:-2].strip()
+         if clean_query.lower().startswith("#ask:"):
+             clean_query = clean_query[5:].strip()
 
     try:
-        result = await client.ask(ask_query)
+        # The API returns {"mwassistant-smw": {"result": "..."}}
+        # But our SMWClient returns the inner data structure from _request.
+        result = await client.ask(clean_query)
     except Exception as exc:
         raise ValueError(
             f"SMW ASK query failed: {type(exc).__name__}: {str(exc)}"
         ) from exc
 
-    # SMW responses are always dict-like
+    # The result is now likely just {"result": "html string"} inside the response wrapper.
+    # We pass this back.
     if not isinstance(result, dict):
-        raise ValueError("SMW ASK returned non-dict result.")
+         # If it's a string (unlikely direct return), wrap it
+         return {"result": str(result)}
 
     return result

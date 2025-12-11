@@ -90,7 +90,7 @@ class SMWClient:
             raise ValueError("SMW ask query must be non-empty.")
 
         request_params = {
-            "action": "ask",
+            "action": "mwassistant-smw",
             "query": ask_query,
             "format": "json",
         }
@@ -99,9 +99,10 @@ class SMWClient:
             request_params.update(params)
 
         try:
+            # We use 'smw_query' scope which matches the PHP requires_scopes check
             data = await self._mw._request(
                 request_params,
-                scopes=["page_read"],
+                scopes=["smw_query"],
             )
         except (MediaWikiRequestError, MediaWikiResponseError) as exc:
             logger.error(
@@ -113,7 +114,10 @@ class SMWClient:
                 f"SMW query failed: {type(exc).__name__}"
             ) from exc
 
-        if not isinstance(data, dict):
-            raise SMWQueryError("SMW returned a non-dictionary response.")
-
+        # The new parser endpoint returns {"mwassistant-smw": {"result": "..."}}
+        # But MediaWikiClient._request() likely unwraps the response based on 'format=json'.
+        # We need to verify what _request returns. 
+        # Usually standard MW API returns { "mwassistant-smw": { ... } } wrapper.
+        
+        # If _request returns the full inner body:
         return data

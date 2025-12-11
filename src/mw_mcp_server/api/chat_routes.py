@@ -156,7 +156,8 @@ async def chat(
             func_args_str = tc["function"]["arguments"]
             call_id = tc["id"]
 
-            used_tools_log.append({"name": func_name, "args": func_args_str})
+            tool_log_entry = {"name": func_name, "args": func_args_str}
+            used_tools_log.append(tool_log_entry)
 
             # Parse arguments
             try:
@@ -165,6 +166,7 @@ async def chat(
                 parsed_args = {}
                 tool_result = {"error": "Invalid JSON arguments for tool call."}
                 _append_tool_result(loop_messages, call_id, tool_result)
+                tool_log_entry["result"] = tool_result
                 continue
 
             # Execute tool
@@ -179,6 +181,7 @@ async def chat(
             except Exception as exc:
                 tool_output = {"error": f"Tool execution failed: {str(exc)}"}
 
+            tool_log_entry["result"] = tool_output
             _append_tool_result(loop_messages, call_id, tool_output)
 
         # ---------------------------------------------------------
