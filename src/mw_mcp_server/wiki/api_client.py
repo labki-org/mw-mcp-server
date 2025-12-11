@@ -1,35 +1,187 @@
+"""
+MediaWiki API Client
+
+This module provides a hardened, testable asynchronous client for interacting
+with a MediaWiki API instance using short-lived MCP→MW JWT authentication.
+
+Design Goals
+------------
+- One HTTP client per MediaWikiClient instance (connection pooling)
+- Short-lived JWT per request with explicit scopes
+- Deterministic failure behavior
+- Strict response validation
+- Dependency-injectable for tests
+"""
+
+from __future__ import annotations
+
+from typing import Dict, Any, Optional, List
+import logging
 import httpx
-from typing import Dict, Any
+
 from ..config import settings
 from ..auth.jwt_utils import create_mcp_to_mw_jwt
 
-class MediaWikiClient:
-    def __init__(self):
-        self.base_url = str(settings.mw_api_base_url)
+logger = logging.getLogger("mcp.mediawiki")
 
-    async def _request(self, params: Dict[str, Any], scopes: list[str] = None) -> Dict[str, Any]:
+
+# ---------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------
+
+class MediaWikiClientError(RuntimeError):
+    """Base exception for MediaWiki client failures."""
+
+
+class MediaWikiRequestError(MediaWikiClientError):
+    """Raised when an HTTP request to MediaWiki fails."""
+
+
+class MediaWikiResponseError(MediaWikiClientError):
+    """Raised when MediaWiki returns a malformed or unexpected response."""
+
+
+# ---------------------------------------------------------------------
+# Client
+# ---------------------------------------------------------------------
+
+class MediaWikiClient:
+    """
+    Asynchronous MediaWiki API client authenticated via MCP→MW JWTs.
+    """
+
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        timeout: float = 15.0,
+    ) -> None:
         """
-        Make authenticated request to MediaWiki API.
-        
-        Args:
-            params: MediaWiki API parameters
-            scopes: JWT scopes for this request (defaults to ["page_read"])
+        Parameters
+        ----------
+        base_url : Optional[str]
+            MediaWiki API base URL. Defaults to settings.mw_api_base_url.
+
+        timeout : float
+            Per-request HTTP timeout in seconds.
+        """
+        self.base_url = base_url or str(settings.mw_api_base_url)
+        self.timeout = timeout
+        self._client: Optional[httpx.AsyncClient] = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle Management
+    # ------------------------------------------------------------------
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """
+        Lazily initialize and return an AsyncClient.
+        """
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        """
+        Close the underlying HTTP client.
+        """
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    # ------------------------------------------------------------------
+    # Core Request Logic
+    # ------------------------------------------------------------------
+
+    async def _request(
+        self,
+        params: Dict[str, Any],
+        scopes: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Perform a single authenticated GET request to the MediaWiki API.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            MediaWiki API query parameters.
+
+        scopes : Optional[List[str]]
+            JWT scopes for this request. Defaults to ["page_read"].
+
+        Returns
+        -------
+        Dict[str, Any]
+            Parsed JSON response.
+
+        Raises
+        ------
+        MediaWikiRequestError
+            On transport-level failure or non-2xx status.
+
+        MediaWikiResponseError
+            On invalid or non-JSON responses.
         """
         if scopes is None:
             scopes = ["page_read"]
-        
-        # Generate short-lived JWT for this request
+
         token = create_mcp_to_mw_jwt(scopes)
         headers = {
-            "Authorization": f"Bearer {token}"
+            "Authorization": f"Bearer {token}",
         }
-        
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(self.base_url, params=params, headers=headers)
-        resp.raise_for_status()
-        return resp.json()
 
-    async def get_page_wikitext(self, title: str) -> str | None:
+        client = await self._get_client()
+
+        try:
+            response = await client.get(
+                self.base_url,
+                params=params,
+                headers=headers,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.error(
+                "MediaWiki request failed: %s %s (%s)",
+                self.base_url,
+                params,
+                type(exc).__name__,
+            )
+            raise MediaWikiRequestError(
+                f"MediaWiki request failed: {type(exc).__name__}"
+            ) from exc
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise MediaWikiResponseError(
+                "MediaWiki returned non-JSON response."
+            ) from exc
+
+        return data
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    async def get_page_wikitext(self, title: str) -> Optional[str]:
+        """
+        Fetch the raw wikitext of a MediaWiki page.
+
+        Parameters
+        ----------
+        title : str
+            Full page title including namespace if applicable.
+
+        Returns
+        -------
+        Optional[str]
+            Raw wikitext if the page exists, otherwise None.
+        """
+        if not title:
+            raise ValueError("Page title must be non-empty.")
+
         params = {
             "action": "query",
             "prop": "revisions",
@@ -38,29 +190,67 @@ class MediaWikiClient:
             "format": "json",
             "formatversion": 2,
         }
+
         data = await self._request(params, scopes=["page_read"])
-        if "query" not in data:
-            return None
-        pages = data["query"].get("pages", [])
+
+        try:
+            pages = data["query"]["pages"]
+        except KeyError as exc:
+            raise MediaWikiResponseError(
+                "Malformed MediaWiki response: missing query.pages."
+            ) from exc
+
         if not pages or "missing" in pages[0]:
             return None
-        return pages[0]["revisions"][0]["content"]
 
-    async def create_or_edit_page(self, title: str, text: str, summary: str):
-        # Placeholder for full edit workflow
-        # When implemented, should use scopes=["page_write"]
-        pass
+        try:
+            return pages[0]["revisions"][0]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise MediaWikiResponseError(
+                f"Malformed revision structure for page '{title}'."
+            ) from exc
 
-    async def get_all_pages(self, limit: int = 500) -> list[str]:
-        """Returns a list of all page titles in the main namespace."""
+    async def get_all_pages(self, limit: int = 500) -> List[str]:
+        """
+        Return a list of all page titles in the main namespace.
+
+        Parameters
+        ----------
+        limit : int
+            Maximum number of pages to return in one call.
+
+        Returns
+        -------
+        List[str]
+            Page titles.
+        """
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+
         params = {
             "action": "query",
             "list": "allpages",
             "aplimit": limit,
-            "apnamespace": 0,  # Main namespace
-            "format": "json"
+            "apnamespace": 0,
+            "format": "json",
         }
+
         data = await self._request(params, scopes=["page_read"])
-        pages = data.get("query", {}).get("allpages", [])
-        return [p["title"] for p in pages]
+
+        try:
+            pages = data["query"]["allpages"]
+        except KeyError as exc:
+            raise MediaWikiResponseError(
+                "Malformed MediaWiki allpages response."
+            ) from exc
+
+        titles: List[str] = []
+
+        for p in pages:
+            title = p.get("title")
+            if isinstance(title, str):
+                titles.append(title)
+
+        return titles
+
 

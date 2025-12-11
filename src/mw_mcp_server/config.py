@@ -1,34 +1,175 @@
+"""
+Application Configuration
+
+This module defines the complete, authoritative configuration schema for the
+MCP server using Pydantic Settings.
+
+Design Principles
+-----------------
+- Fail fast on misconfiguration (especially for secrets)
+- Strong typing and strict validation
+- Clear separation between:
+    - External service credentials
+    - JWT/security configuration
+    - Embedding/vector index configuration
+- Fully environment-driven (12-factor friendly)
+- Test-friendly via direct instantiation overrides
+"""
+
+from __future__ import annotations
+
+from typing import List
+from pydantic import Field, AnyHttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyHttpUrl
+
 
 class Settings(BaseSettings):
-    mw_api_base_url: AnyHttpUrl
-    mw_bot_username: str
-    mw_bot_password: str
+    """
+    Global application settings.
 
-    openai_api_key: str
-    embedding_model: str = "text-embedding-3-large"
+    All values are loaded from environment variables or a `.env` file.
+    """
 
-    # Bidirectional JWT secrets
-    jwt_mw_to_mcp_secret: str  # For verifying tokens from MWAssistant
-    jwt_mcp_to_mw_secret: str  # For signing tokens to MediaWiki
-    
-    # JWT constants (hardcoded as per spec)
-    JWT_ALGO: str = "HS256"
-    JWT_TTL: int = 30  # seconds
+    # ------------------------------------------------------------------
+    # MediaWiki Configuration
+    # ------------------------------------------------------------------
 
-    vector_index_path: str = "/app/data/faiss_index.bin"
-    vector_meta_path: str = "/app/data/index_meta.json"
+    mw_api_base_url: AnyHttpUrl = Field(
+        ...,
+        description="Base URL of the MediaWiki API endpoint.",
+    )
 
-    allowed_namespaces_public: str = "0,14"
+    mw_bot_username: str = Field(
+        ...,
+        min_length=1,
+        description="Bot username for MediaWiki API authentication.",
+    )
 
-    allowed_namespaces_public: str = "0,14"
+    mw_bot_password: SecretStr = Field(
+        ...,
+        min_length=1,
+        description="Bot password for MediaWiki API authentication.",
+    )
+
+    # ------------------------------------------------------------------
+    # OpenAI / LLM Configuration
+    # ------------------------------------------------------------------
+
+    openai_api_key: SecretStr = Field(
+        ...,
+        min_length=1,
+        description="API key for OpenAI or OpenAI-compatible LLM provider.",
+    )
+
+    openai_model: str = Field(
+        default="gpt-4o-mini",
+        min_length=1,
+        description="Default chat model for LLM completions.",
+    )
+
+    embedding_model: str = Field(
+        default="text-embedding-3-large",
+        min_length=1,
+        description="Default model used for vector embeddings.",
+    )
+
+    # ------------------------------------------------------------------
+    # JWT / Security Configuration (Bidirectional)
+    # ------------------------------------------------------------------
+
+    jwt_mw_to_mcp_secret: SecretStr = Field(
+        ...,
+        min_length=16,
+        description="HMAC secret used to verify JWTs issued by MWAssistant.",
+    )
+
+    jwt_mcp_to_mw_secret: SecretStr = Field(
+        ...,
+        min_length=16,
+        description="HMAC secret used to sign JWTs sent to MediaWiki.",
+    )
+
+    jwt_algo: str = Field(
+        default="HS256",
+        description="JWT signing algorithm (must match both sides).",
+    )
+
+    jwt_ttl_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=300,
+        description="Lifetime of MCP→MW JWTs in seconds.",
+    )
+
+    # ------------------------------------------------------------------
+    # Vector Index / Embedding Persistence
+    # ------------------------------------------------------------------
+
+    vector_index_path: str = Field(
+        default="/app/data/faiss_index.bin",
+        min_length=1,
+        description="Filesystem path for the persisted FAISS index.",
+    )
+
+    vector_meta_path: str = Field(
+        default="/app/data/index_meta.json",
+        min_length=1,
+        description="Filesystem path for FAISS metadata.",
+    )
+
+    # ------------------------------------------------------------------
+    # Namespace Access Control
+    # ------------------------------------------------------------------
+
+    allowed_namespaces_public: str = Field(
+        default="0,14",
+        description="Comma-separated list of MediaWiki namespace IDs allowed for public vector search.",
+    )
+
+    allowed_namespaces_public_list: List[int] = Field(
+        default_factory=list,
+        description="Parsed integer namespace IDs derived from allowed_namespaces_public.",
+    )
+
+    # ------------------------------------------------------------------
+    # Validators
+    # ------------------------------------------------------------------
+
+    @field_validator("allowed_namespaces_public_list", mode="before")
+    @classmethod
+    def _parse_allowed_namespaces(cls, v, info):
+        """
+        Parse comma-separated namespace string into integer list.
+        """
+        raw = info.data.get("allowed_namespaces_public", "")
+        namespaces: List[int] = []
+
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if not part.isdigit():
+                raise ValueError(
+                    f"Invalid namespace ID '{part}' in allowed_namespaces_public."
+                )
+            namespaces.append(int(part))
+
+        return namespaces
+
+    # ------------------------------------------------------------------
+    # Pydantic Settings Configuration
+    # ------------------------------------------------------------------
 
     model_config = SettingsConfigDict(
         env_file=".env",
-        extra="ignore"
+        env_file_encoding="utf-8",
+        extra="forbid",          # 🔒 No silent misconfiguration
+        case_sensitive=True,
     )
 
+
+# ----------------------------------------------------------------------
+# Global Application Settings Singleton
+# ----------------------------------------------------------------------
+
 settings = Settings()
-
-

@@ -1,24 +1,73 @@
 [project]
 name = "mw-mcp-server"
 version = "0.1.0"
-description = "MCP server for MediaWiki interactions"
-authors = [
-    { name = "User", email = "user@example.com" }
-]
-dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "pydantic",
-    "pydantic-settings",
-    "httpx",
-    "pyjwt",
-    "numpy",
-    "faiss-cpu",
-]
-requires-python = ">=3.11"
+description = "Production-grade MCP server for MediaWiki and LLM integration"
 readme = "README.md"
+requires-python = ">=3.11"
+
+authors = [
+  { name = "Daniel Aharoni", email = "user@example.com" }
+]
+
 license = { text = "MIT" }
 
+########################################
+# Core Runtime Dependencies
+########################################
+dependencies = [
+  # Web framework
+  "fastapi>=0.115.0,<1.0.0",
+  "uvicorn[standard]>=0.29.0,<1.0.0",
+
+  # Config & validation (Pydantic v2)
+  "pydantic>=2.7.0,<3.0.0",
+  "pydantic-settings>=2.2.0,<3.0.0",
+
+  # HTTP client
+  "httpx>=0.27.0,<1.0.0",
+
+  # Auth / JWT
+  "PyJWT>=2.8.0,<3.0.0",
+
+  # Numerical + FAISS
+  "numpy>=1.26.0,<2.0.0",
+  "faiss-cpu>=1.7.4,<2.0.0",
+]
+
+########################################
+# Optional Dependency Groups
+########################################
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0.0,<9.0.0",
+  "pytest-asyncio>=0.23.0,<1.0.0",
+  "respx>=0.21.0,<1.0.0",         # HTTPX mocking
+]
+
+dev = [
+  "ruff>=0.4.0,<1.0.0",
+  "mypy>=1.9.0,<2.0.0",
+  "ipython>=8.0.0,<9.0.0",
+]
+
+########################################
+# Build System
+########################################
+
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.22.0"]
 build-backend = "hatchling.build"
+
+########################################
+# Tooling Configuration (Optional)
+########################################
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "-q"
+testpaths = ["tests"]

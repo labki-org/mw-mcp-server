@@ -10,24 +10,45 @@ Design Goals
 - Safe defaults (no shared mutable state)
 - Clear schema documentation
 - Forward compatibility with testing and OpenAPI generation
+- Explicit tool output contracts
 """
 
+from __future__ import annotations
+
 from typing import List, Optional, Dict, Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
-# --- Tool Output Contracts ---
+# ---------------------------------------------------------------------
+# Tool Output Contracts (Authoritative)
+# ---------------------------------------------------------------------
 
 class ToolSearchResult(BaseModel):
-    title: str
-    section_id: str | None
-    score: float
-    text: str
+    """
+    Canonical tool-layer result for vector search.
+    This model defines the exact output contract for:
+        - tools/search_tools.py
+        - LLM tool responses
+        - API search routes
+    """
+    title: str = Field(..., min_length=1)
+    section_id: Optional[str] = None
+    score: float = Field(..., ge=0.0)
+    text: str = Field(..., min_length=1)
+
+    model_config = ConfigDict(extra="forbid")
+
 
 class OperationResult(BaseModel):
+    """
+    Standardized mutation operation result.
+    Used for create/update/delete-style endpoints.
+    """
     status: Literal["updated", "deleted", "created", "ok"]
-    count: int | None = None
-    details: Dict[str, Any] | None = None
+    count: Optional[int] = Field(default=None, ge=0)
+    details: Optional[Dict[str, Any]] = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # ---------------------------------------------------------------------
@@ -41,6 +62,8 @@ class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str = Field(..., min_length=1)
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class ChatRequest(BaseModel):
     """
@@ -51,6 +74,8 @@ class ChatRequest(BaseModel):
     max_tokens: Optional[int] = Field(default=512, ge=1, le=32768)
     tools_mode: Literal["auto", "none", "forced"] = "auto"
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class ChatResponse(BaseModel):
     """
@@ -58,6 +83,8 @@ class ChatResponse(BaseModel):
     """
     messages: List[ChatMessage]
     used_tools: List[Dict[str, Any]] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # ---------------------------------------------------------------------
@@ -71,15 +98,19 @@ class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
     k: int = Field(default=5, ge=1, le=100)
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class SearchResult(BaseModel):
     """
     Individual search match.
     """
-    title: str
+    title: str = Field(..., min_length=1)
     section_id: Optional[str] = None
-    score: float
-    text: str
+    score: float = Field(..., ge=0.0)
+    text: str = Field(..., min_length=1)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # ---------------------------------------------------------------------
@@ -92,6 +123,8 @@ class SMWQueryRequest(BaseModel):
     """
     ask: str = Field(..., min_length=1)
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class SMWQueryResponse(BaseModel):
     """
@@ -99,26 +132,7 @@ class SMWQueryResponse(BaseModel):
     """
     raw: Dict[str, Any]
 
-
-# ---------------------------------------------------------------------
-# Edit Models
-# ---------------------------------------------------------------------
-
-class EditRequest(BaseModel):
-    """
-    Page edit request issued by the LLM or MediaWiki client.
-    """
-    title: str = Field(..., min_length=1)
-    new_text: str = Field(..., min_length=1)
-    summary: str = Field(default="AI-assisted edit", min_length=1)
-
-
-class EditResponse(BaseModel):
-    """
-    Result of a page edit operation.
-    """
-    success: bool
-    new_rev_id: Optional[int] = None
+    model_config = ConfigDict(extra="forbid")
 
 
 # ---------------------------------------------------------------------
@@ -133,12 +147,16 @@ class EmbeddingUpdatePageRequest(BaseModel):
     content: str = Field(..., min_length=1)
     last_modified: Optional[str] = None
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class EmbeddingDeletePageRequest(BaseModel):
     """
     Request to delete all embeddings for a given page.
     """
     title: str = Field(..., min_length=1)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class EmbeddingStatsResponse(BaseModel):
@@ -149,3 +167,5 @@ class EmbeddingStatsResponse(BaseModel):
     total_pages: int = Field(..., ge=0)
     embedded_pages: List[str] = Field(default_factory=list)
     page_timestamps: Dict[str, str] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
