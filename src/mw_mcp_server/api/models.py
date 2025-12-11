@@ -73,6 +73,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     max_tokens: Optional[int] = Field(default=512, ge=1, le=32768)
     tools_mode: Literal["auto", "none", "forced"] = "auto"
+    context: Literal["chat", "editor"] = "chat"
 
     model_config = ConfigDict(extra="forbid")
 

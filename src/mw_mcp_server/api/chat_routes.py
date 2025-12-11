@@ -41,21 +41,11 @@ from ..tools.definitions import TOOL_DEFINITIONS
 from ..tools.base import dispatch_tool_call
 from ..sessions.store import session_store
 from .dependencies import get_llm_client, get_faiss_index, get_embedder
+from ..prompts import CHAT_SYSTEM_PROMPT, EDITOR_SYSTEM_PROMPT
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-# ---------------------------------------------------------------------
-# System Prompt
-# ---------------------------------------------------------------------
 
-SYSTEM_PROMPT = (
-    "You are a MediaWiki assistant with access to specific tools to fetch data. "
-    "You cannot access external websites, but you SHOULD use the available tools "
-    "whenever they help answer a user's question.\n\n"
-    "RULES:\n"
-    "1. Always use [[Page Title]] format when referring to wiki pages.\n"
-    "2. Cite sources by naming the wiki page your info comes from.\n"
-)
 
 
 # ---------------------------------------------------------------------
@@ -134,9 +124,12 @@ async def chat(
     # -------------------------------------------------------------
     # llm injected via dependency
 
+    # Select prompt based on context
+    system_prompt = EDITOR_SYSTEM_PROMPT if req.context == "editor" else CHAT_SYSTEM_PROMPT
+
     try:
         response_msg = await llm.chat(
-            SYSTEM_PROMPT,
+            system_prompt,
             full_context,
             tools=TOOL_DEFINITIONS,
         )
@@ -193,7 +186,7 @@ async def chat(
         # ---------------------------------------------------------
         try:
             final_msg = await llm.chat(
-                SYSTEM_PROMPT,
+                system_prompt,
                 loop_messages,
                 tools=TOOL_DEFINITIONS,
             )
