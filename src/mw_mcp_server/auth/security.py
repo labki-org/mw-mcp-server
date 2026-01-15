@@ -77,7 +77,7 @@ def _decode_mw_token(token: str) -> dict:
         audience="mw-mcp-server",
         issuer="MWAssistant",
         options={
-            "require": ["iss", "aud", "iat", "exp", "user", "roles", "scope"],
+            "require": ["iss", "aud", "iat", "exp", "user", "roles", "scope", "wiki_id"],
         },
     )
 
@@ -141,6 +141,7 @@ def verify_mw_to_mcp_jwt(
     # Validate required fields
     # ---------------------------------------------------------------
     username = payload.get("user")
+    wiki_id = payload.get("wiki_id")
     roles = payload.get("roles")
     scopes = payload.get("scope")
     client_id = payload.get("client_id", "MWAssistant")
@@ -149,6 +150,12 @@ def verify_mw_to_mcp_jwt(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token missing 'user' claim.",
+        )
+
+    if not wiki_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing 'wiki_id' claim (required for multi-tenant isolation).",
         )
 
     if not isinstance(roles, list):
@@ -165,6 +172,7 @@ def verify_mw_to_mcp_jwt(
 
     return UserContext(
         username=username,
+        wiki_id=wiki_id,
         roles=roles,
         scopes=scopes,
         client_id=client_id,

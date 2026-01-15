@@ -16,6 +16,7 @@ def create_valid_token(
     issuer="MWAssistant",
     audience="mw-mcp-server",
     user="TestUser",
+    wiki_id="test-wiki",
     roles=None,
     scopes=None,
     expired=False,
@@ -38,6 +39,7 @@ def create_valid_token(
         "iat": iat,
         "exp": exp,
         "user": user,
+        "wiki_id": wiki_id,
         "roles": roles,
         "scope": scopes,
         "client_id": "MWAssistant"
@@ -55,6 +57,7 @@ def test_valid_jwt_accepted():
     user_context = verify_mw_to_mcp_jwt(creds)
     
     assert user_context.username == "TestUser"
+    assert user_context.wiki_id == "test-wiki"
     assert "user" in user_context.roles
     assert "chat_completion" in user_context.scopes
 

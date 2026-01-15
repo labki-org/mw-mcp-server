@@ -23,6 +23,13 @@ class UserContext(BaseModel):
         description="MediaWiki username associated with the request.",
     )
 
+    wiki_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Unique identifier for the source MediaWiki instance (tenant).",
+    )
+
     roles: List[str] = Field(
         default_factory=list,
         description="List of MediaWiki user groups (roles).",

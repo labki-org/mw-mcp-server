@@ -1,0 +1,79 @@
+# Production Docker Compose for mw-mcp-server
+#
+# This configuration is optimized for VPS deployment with:
+# - Production-ready settings
+# - Resource limits
+# - Gunicorn with multiple workers
+# - Persistent tenant data volumes
+#
+# Usage:
+#   docker-compose -f docker-compose.prod.yml up -d
+
+services:
+  mw-mcp-server:
+    container_name: mw-mcp-server
+    image: ghcr.io/labki-org/mw-mcp-server:${VERSION:-latest}
+    
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # Internal port only - Caddy proxies to this
+    expose:
+      - "8000"
+
+    # Or for local testing without Caddy:
+    # ports:
+    #   - "127.0.0.1:8000:8000"
+
+    env_file:
+      - .env
+
+    environment:
+      # Override for production (Gunicorn handled by entrypoint)
+      - WORKERS=${WORKERS:-2}
+
+    volumes:
+      # Persistent storage for all tenant FAISS indexes
+      - mcp_data:/app/data
+
+    # -------------------------------
+    # Security Hardening
+    # -------------------------------
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    # -------------------------------
+    # Operational Reliability
+    # -------------------------------
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    # -------------------------------
+    # Resource Limits
+    # -------------------------------
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mcp_data:
+    driver: local

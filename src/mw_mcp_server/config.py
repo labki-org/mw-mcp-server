@@ -118,6 +118,16 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Multi-Tenant Data Storage
+    # ------------------------------------------------------------------
+
+    data_root_path: str = Field(
+        default="/app/data",
+        min_length=1,
+        description="Root directory for tenant-scoped data (FAISS indexes, etc.).",
+    )
+
+    # ------------------------------------------------------------------
     # Namespace Access Control
     # ------------------------------------------------------------------
 
