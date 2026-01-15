@@ -46,6 +46,11 @@ class UserContext(BaseModel):
         description="Client identifier that issued the JWT (e.g., MWAssistant).",
     )
 
+    allowed_namespaces: List[int] = Field(
+        default_factory=list,
+        description="Namespace IDs this user can read (from Lockdown). Used for pre-filtering vector search.",
+    )
+
     model_config = ConfigDict(
         frozen=True,                # Makes UserContext immutable after creation
         arbitrary_types_allowed=False,

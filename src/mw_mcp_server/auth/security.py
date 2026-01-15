@@ -145,6 +145,7 @@ def verify_mw_to_mcp_jwt(
     roles = payload.get("roles")
     scopes = payload.get("scope")
     client_id = payload.get("client_id", "MWAssistant")
+    allowed_namespaces = payload.get("allowed_namespaces", [])
 
     if not username:
         raise HTTPException(
@@ -170,12 +171,18 @@ def verify_mw_to_mcp_jwt(
             detail="'scope' claim must be a list.",
         )
 
+    # Validate allowed_namespaces is a list of integers
+    if not isinstance(allowed_namespaces, list):
+        allowed_namespaces = []
+    allowed_namespaces = [ns for ns in allowed_namespaces if isinstance(ns, int)]
+
     return UserContext(
         username=username,
         wiki_id=wiki_id,
         roles=roles,
         scopes=scopes,
         client_id=client_id,
+        allowed_namespaces=allowed_namespaces,
     )
 
 

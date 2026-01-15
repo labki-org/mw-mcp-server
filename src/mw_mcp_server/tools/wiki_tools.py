@@ -34,22 +34,43 @@ smw_client = SMWClient(mw_client)
 
 
 # ---------------------------------------------------------------------
-# Permission Layer (placeholder)
+# Permission Layer
 # ---------------------------------------------------------------------
 
-def _assert_user_can_read(user: UserContext, title: str) -> None:
+async def _assert_user_can_read(
+    user: UserContext,
+    title: str,
+    client: Optional[MediaWikiClient] = None,
+) -> None:
     """
-    Placeholder for permission checks.
+    Validate that a user can read a specific page.
 
-    Implementations could include:
-    - Namespace-specific access rules
-    - Role-based restrictions
-    - ACL lookups
-    - SMW-driven metadata checks
+    This is called before returning page content to the LLM to ensure
+    ControlAccess and Lockdown restrictions are respected.
+
+    Parameters
+    ----------
+    user : UserContext
+        Authenticated user context.
+
+    title : str
+        Page title to check.
+
+    client : MediaWikiClient
+        Optional client override for testing.
+
+    Raises
+    ------
+    PermissionError
+        If the user cannot read the page.
     """
-    # At the moment, all users with a valid JWT may read.
-    # This hook exists for future expansion.
-    return
+    client = client or mw_client
+    access_map = await client.check_read_access([title], user.username)
+
+    if not access_map.get(title, False):
+        raise PermissionError(
+            f"User '{user.username}' does not have read access to page: {title}"
+        )
 
 
 # ---------------------------------------------------------------------
@@ -83,9 +104,10 @@ async def tool_get_page(
     if not title:
         raise ValueError("mw_get_page requires a non-empty 'title' argument.")
 
-    _assert_user_can_read(user, title)
-
     client = client or mw_client
+
+    # Check permission before fetching page content
+    await _assert_user_can_read(user, title, client)
 
     try:
         text = await client.get_page_wikitext(title)

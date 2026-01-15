@@ -293,4 +293,54 @@ class MediaWikiClient:
         # We expect a list of dicts: {title, snippet, size, wordcount, timestamp}
         return data.get("mwassistant-keyword-search", [])
 
+    async def check_read_access(
+        self, titles: List[str], username: str
+    ) -> Dict[str, bool]:
+        """
+        Check if a user can read each page title.
 
+        This calls the mwassistant-check-access API endpoint to batch-validate
+        read permissions against MediaWiki's permission system (including
+        Lockdown and ControlAccess restrictions).
+
+        Parameters
+        ----------
+        titles : List[str]
+            List of page titles to check.
+
+        username : str
+            MediaWiki username to check permissions for.
+
+        Returns
+        -------
+        Dict[str, bool]
+            Map of page title to boolean indicating read access.
+        """
+        if not titles:
+            return {}
+
+        # Join titles with pipe as MW API convention
+        params = {
+            "action": "mwassistant-check-access",
+            "titles": "|".join(titles),
+            "username": username,
+            "format": "json",
+        }
+
+        try:
+            data = await self._request(params, scopes=["check_access"])
+        except MediaWikiRequestError:
+            # If the permission check fails, deny all access as a safe default
+            logger.warning(
+                "Permission check failed for user '%s' on %d titles",
+                username,
+                len(titles),
+            )
+            return {title: False for title in titles}
+
+        # The result is nested under 'mwassistant-check-access' key
+        result = data.get("mwassistant-check-access", {})
+        access_map = result.get("access", {})
+
+        # Ensure all requested titles have a response (default to False if missing)
+        return {title: access_map.get(title, False) for title in titles}
