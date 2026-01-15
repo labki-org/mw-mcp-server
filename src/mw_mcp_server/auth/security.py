@@ -17,7 +17,7 @@ Security Model
 from __future__ import annotations
 
 import jwt
-from typing import Callable, List
+from typing import Callable
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials

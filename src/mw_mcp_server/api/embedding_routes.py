@@ -10,7 +10,7 @@ These endpoints are designed to be invoked by trusted MediaWiki services
 for synchronizing wiki page content into the MCP vector search layer.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from typing import List, Annotated
 
 from .models import (

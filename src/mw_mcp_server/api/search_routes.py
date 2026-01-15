@@ -6,7 +6,7 @@ FAISS embedding index. These routes are typically invoked by the LLM during
 tool execution as well as by the MediaWiki client for direct user queries.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from typing import List, Annotated
 
 from .models import SearchRequest, SearchResult
