@@ -21,6 +21,7 @@ import httpx
 
 from ..config import settings
 from ..auth.jwt_utils import create_mcp_to_mw_jwt
+from ..auth.models import UserContext
 
 logger = logging.getLogger("mcp.mediawiki")
 

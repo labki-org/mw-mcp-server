@@ -9,7 +9,7 @@ Each instance corresponds to ONE embedding vector and ONE chunk of text.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, ConfigDict
 
 

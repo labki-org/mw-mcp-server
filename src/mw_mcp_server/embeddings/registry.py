@@ -14,14 +14,13 @@ Thread Safety
 from __future__ import annotations
 
 from threading import RLock
-from typing import Dict, Optional
+from typing import Dict
 
 from .index import FaissIndex
 from ..tenants import (
     ensure_tenant_directory,
     get_tenant_index_path,
     get_tenant_meta_path,
-    InvalidTenantError,
 )
 
 

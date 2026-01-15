@@ -10,7 +10,7 @@ from mw_mcp_server.auth.jwt_utils import create_mcp_to_mw_jwt
 # Mock settings for testing
 settings.jwt_mw_to_mcp_secret = "test-secret-mw-to-mcp-must-be-long-enough"
 settings.jwt_mcp_to_mw_secret = "test-secret-mcp-to-mw-must-be-long-enough"
-settings.JWT_ALGO = "HS256"
+settings.jwt_algo = "HS256"
 
 def create_valid_token(
     issuer="MWAssistant",

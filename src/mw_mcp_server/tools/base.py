@@ -15,12 +15,10 @@ explicitly registered here.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Callable, Awaitable
+from typing import Any, Dict, Callable, Awaitable, Optional
 
 from .wiki_tools import tool_get_page, tool_run_smw_ask
-from .wiki_tools import tool_get_page, tool_run_smw_ask
 from .search_tools import tool_vector_search, tool_search_pages
-from .schema_tools import tool_get_categories, tool_get_properties, tool_list_pages
 from .schema_tools import tool_get_categories, tool_get_properties, tool_list_pages
 from ..auth.models import UserContext
 from ..embeddings.embedder import Embedder
@@ -76,15 +74,6 @@ async def _handle_vector_search(
         raise ValueError("mw_vector_search requires 'query' argument.")
 
     k = args.get("k", 5)
-
-    return await tool_vector_search(
-        query=query,
-        user=user,
-        faiss_index=faiss_index,
-        embedder=embedder,
-        k=k,
-    )
-
 
     return await tool_vector_search(
         query=query,

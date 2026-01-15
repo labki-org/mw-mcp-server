@@ -24,7 +24,6 @@ from .wiki_tools import mw_client
 from ..embeddings.embedder import Embedder
 from ..embeddings.index import FaissIndex
 from ..auth.models import UserContext
-from ..config import settings
 from ..api.models import ToolSearchResult
 
 logger = logging.getLogger("mcp.search")
