@@ -5,13 +5,13 @@ import sys
 # Ensure src is in pythonpath
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
 load_dotenv()
 
-from mw_mcp_server.wiki.api_client import MediaWikiClient
-from mw_mcp_server.embeddings.embedder import Embedder
-from mw_mcp_server.embeddings.index import FaissIndex
-from mw_mcp_server.embeddings.models import IndexedDocument
+from mw_mcp_server.wiki.api_client import MediaWikiClient  # noqa: E402
+from mw_mcp_server.embeddings.embedder import Embedder  # noqa: E402
+from mw_mcp_server.embeddings.index import FaissIndex  # noqa: E402
+from mw_mcp_server.embeddings.models import IndexedDocument  # noqa: E402
 
 async def main():
     print("Initializing clients...")

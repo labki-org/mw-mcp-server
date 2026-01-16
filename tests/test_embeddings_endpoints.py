@@ -1,10 +1,9 @@
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 import jwt
 import time
-import os
 import contextlib
 
 from mw_mcp_server.main import app

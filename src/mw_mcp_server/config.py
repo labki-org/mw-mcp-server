@@ -19,7 +19,7 @@ Design Principles
 from __future__ import annotations
 
 from typing import List, Dict
-from pydantic import Field, AnyHttpUrl, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -208,8 +208,7 @@ class Settings(BaseSettings):
         # 2. If no WIKI_CREDS, try legacy env vars (backward compatibility)
         # Note: We access values from info.data because validation runs after env loading
         if not creds_map:
-            legacy_mw_secret = info.data.get("jwt_mw_to_mcp_secret")
-            legacy_mcp_secret = info.data.get("jwt_mcp_to_mw_secret")
+
             
             # If we have legacy secrets, we treat them as a "default" fallback 
             # that can be used if a token doesn't match any specific wiki_id,

@@ -11,7 +11,6 @@ import time
 import os
 from unittest.mock import patch
 from fastapi import HTTPException
-from pydantic import SecretStr
 
 from mw_mcp_server.auth.security import verify_mw_to_mcp_jwt, require_scopes
 from mw_mcp_server.auth.jwt_utils import create_mcp_to_mw_jwt

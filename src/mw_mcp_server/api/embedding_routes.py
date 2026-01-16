@@ -13,7 +13,7 @@ Uses PostgreSQL + pgvector for storage and similarity search.
 """
 
 from fastapi import APIRouter, Depends
-from typing import List, Annotated
+from typing import Annotated
 from datetime import datetime
 
 
@@ -28,12 +28,12 @@ from ..auth.security import require_scopes
 from ..auth.models import UserContext
 from ..db import VectorStore
 from ..embeddings.embedder import Embedder
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 router = APIRouter(prefix="/embeddings", tags=["embeddings"])
 
 
 # ---------------------------------------------------------------------
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=12000,       # ~3000 tokens
