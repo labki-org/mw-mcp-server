@@ -22,7 +22,7 @@ from .search_tools import tool_vector_search, tool_search_pages
 from .schema_tools import tool_get_categories, tool_get_properties, tool_list_pages
 from ..auth.models import UserContext
 from ..embeddings.embedder import Embedder
-from ..embeddings.index import FaissIndex
+from ..db import VectorStore
 
 
 # ---------------------------------------------------------------------
@@ -30,7 +30,7 @@ from ..embeddings.index import FaissIndex
 # ---------------------------------------------------------------------
 
 ToolHandler = Callable[
-    [Dict[str, Any], UserContext, FaissIndex, Embedder],
+    [Dict[str, Any], UserContext, VectorStore, Embedder],
     Awaitable[Any],
 ]
 
@@ -42,7 +42,7 @@ ToolHandler = Callable[
 async def _handle_get_page(
     args: Dict[str, Any],
     user: UserContext,
-    faiss_index: FaissIndex,
+    vector_store: VectorStore,
     embedder: Embedder,
 ) -> Any:
     title = args.get("title")
@@ -54,19 +54,19 @@ async def _handle_get_page(
 async def _handle_smw_ask(
     args: Dict[str, Any],
     user: UserContext,
-    faiss_index: FaissIndex,
+    vector_store: VectorStore,
     embedder: Embedder,
 ) -> Any:
     ask = args.get("ask")
     if not ask:
         raise ValueError("mw_run_smw_ask requires 'ask' argument.")
-    return await tool_run_smw_ask(ask, user, faiss_index=faiss_index)
+    return await tool_run_smw_ask(ask, user, vector_store=vector_store)
 
 
 async def _handle_vector_search(
     args: Dict[str, Any],
     user: UserContext,
-    faiss_index: FaissIndex,
+    vector_store: VectorStore,
     embedder: Embedder,
 ) -> Any:
     query = args.get("query")
@@ -78,7 +78,7 @@ async def _handle_vector_search(
     return await tool_vector_search(
         query=query,
         user=user,
-        faiss_index=faiss_index,
+        vector_store=vector_store,
         embedder=embedder,
         k=k,
     )
@@ -87,7 +87,7 @@ async def _handle_vector_search(
 async def _handle_search_pages(
     args: Dict[str, Any],
     user: UserContext,
-    faiss_index: FaissIndex,
+    vector_store: VectorStore,
     embedder: Embedder,
 ) -> Any:
     query = args.get("query")
@@ -106,11 +106,12 @@ async def _handle_search_pages(
 async def _handle_get_categories(
     args: Dict[str, Any],
     user: UserContext,
-    faiss_index: FaissIndex,
+    vector_store: VectorStore,
     embedder: Embedder,
 ) -> Any:
     return await tool_get_categories(
-        faiss_index=faiss_index,
+        vector_store=vector_store,
+        wiki_id=user.wiki_id,
         prefix=args.get("prefix"),
         names=args.get("names"),
         limit=args.get("limit", 50),
@@ -120,11 +121,12 @@ async def _handle_get_categories(
 async def _handle_get_properties(
     args: Dict[str, Any],
     user: UserContext,
-    faiss_index: FaissIndex,
+    vector_store: VectorStore,
     embedder: Embedder,
 ) -> Any:
     return await tool_get_properties(
-        faiss_index=faiss_index,
+        vector_store=vector_store,
+        wiki_id=user.wiki_id,
         prefix=args.get("prefix"),
         names=args.get("names"),
         limit=args.get("limit", 50),
@@ -134,7 +136,7 @@ async def _handle_get_properties(
 async def _handle_list_pages(
     args: Dict[str, Any],
     user: UserContext,
-    faiss_index: FaissIndex,
+    vector_store: VectorStore,
     embedder: Embedder,
 ) -> Any:
     raw_ns = args.get("namespace")
@@ -165,14 +167,11 @@ async def _handle_list_pages(
                 if normalized in mapping:
                     ns_id = mapping[normalized]
                 else:
-                    # Fallback: maybe the user provided a localized name or something unknown.
-                    # For now, we error to be safe, or we could treat it as 0? Error is safer.
-                    # Actually, let's try to verify if it's a known namespace in the index? 
-                    # No, strict parsing is better.
-                    raise ValueError(f"Unknown namespace alias: '{raw_ns}'. Use an ID or standard name (e.g. 'Category').")
+                    raise ValueError(f"Unknown namespace alias: '{raw_ns}'. Use an ID or standard name.")
         
     return await tool_list_pages(
-        faiss_index=faiss_index,
+        vector_store=vector_store,
+        wiki_id=user.wiki_id,
         namespace=ns_id,
         prefix=args.get("prefix"),
         limit=args.get("limit", 50),
@@ -198,7 +197,7 @@ async def dispatch_tool_call(
     tool_name: str,
     args: Dict[str, Any],
     user: UserContext,
-    faiss_index: FaissIndex,
+    vector_store: VectorStore,
     embedder: Embedder,
 ) -> Any:
     """
@@ -215,8 +214,8 @@ async def dispatch_tool_call(
     user : UserContext
         Authenticated user identity.
 
-    faiss_index : FaissIndex
-        Active FAISS index instance (injected).
+    vector_store : VectorStore
+        PostgreSQL + pgvector store instance (injected).
 
     embedder : Embedder
         Active embedder instance (injected).
@@ -236,4 +235,4 @@ async def dispatch_tool_call(
     if not handler:
         raise ValueError(f"Unknown tool requested: {tool_name}")
 
-    return await handler(args, user, faiss_index, embedder)
+    return await handler(args, user, vector_store, embedder)

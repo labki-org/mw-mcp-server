@@ -84,6 +84,7 @@ class ChatResponse(BaseModel):
     """
     messages: List[ChatMessage]
     used_tools: List[Dict[str, Any]] = Field(default_factory=list)
+    session_id: Optional[str] = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -109,7 +110,7 @@ class SearchResult(BaseModel):
     title: str = Field(..., min_length=1)
     section_id: Optional[str] = None
     score: float = Field(..., ge=0.0)
-    text: str = Field(..., min_length=1)
+    text: Optional[str] = None
 
     model_config = ConfigDict(extra="forbid")
 

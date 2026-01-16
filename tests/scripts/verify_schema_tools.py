@@ -110,8 +110,10 @@ async def main():
             print("SUCCESS: 'text' field excluded.")
             
     # Cleanup
-    if Path("temp_index.bin").exists(): os.remove("temp_index.bin")
-    if Path("temp_meta.json").exists(): os.remove("temp_meta.json")
+    if Path("temp_index.bin").exists():
+        os.remove("temp_index.bin")
+    if Path("temp_meta.json").exists():
+        os.remove("temp_meta.json")
     
     print("\nVERIFICATION COMPLETE")
 

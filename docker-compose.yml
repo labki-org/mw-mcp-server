@@ -15,22 +15,16 @@ services:
     env_file:
       - .env
 
-    volumes:
-      # Persistent FAISS index + metadata
-      - mw_mcp_data:/app/data
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://mcp:${DB_PASSWORD:-changeme}@postgres:5432/mcp
 
-    # -------------------------------
-    # Security Hardening
-    # -------------------------------
-
-    read_only: true
-    tmpfs:
-      - /tmp
+    depends_on:
+      postgres:
+        condition: service_healthy
 
     # -------------------------------
     # Operational Reliability
     # -------------------------------
-
     restart: unless-stopped
 
     healthcheck:
@@ -39,16 +33,28 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    # -------------------------------
-    # Resource Guardrails (Optional)
-    # -------------------------------
-    # Uncomment if you want strict limits
-    #
-    # deploy:
-    #   resources:
-    #     limits:
-    #       cpus: "2.0"
-    #       memory: 4G
+
+  # -------------------------------
+  # PostgreSQL with pgvector
+  # -------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mcp-postgres
+    restart: unless-stopped
+    
+    environment:
+      POSTGRES_DB: mcp
+      POSTGRES_USER: mcp
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcp -d mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
-  mw_mcp_data:
+  pgdata:

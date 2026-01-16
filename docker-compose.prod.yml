@@ -4,7 +4,7 @@
 # - Production-ready settings
 # - Resource limits
 # - Gunicorn with multiple workers
-# - Persistent tenant data volumes
+# - PostgreSQL with pgvector for embeddings and chat storage
 #
 # Usage:
 #   docker-compose -f docker-compose.prod.yml up -d
@@ -22,20 +22,16 @@ services:
     expose:
       - "8000"
 
-    # Or for local testing without Caddy:
-    # ports:
-    #   - "127.0.0.1:8000:8000"
-
     env_file:
       - .env
 
     environment:
-      # Override for production (Gunicorn handled by entrypoint)
       - WORKERS=${WORKERS:-2}
+      - DATABASE_URL=postgresql+asyncpg://mcp:${DB_PASSWORD}@postgres:5432/mcp
 
-    volumes:
-      # Persistent storage for all tenant FAISS indexes
-      - mcp_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
 
     # -------------------------------
     # Security Hardening
@@ -74,6 +70,43 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # -------------------------------
+  # PostgreSQL with pgvector
+  # -------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mcp-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: mcp
+      POSTGRES_USER: mcp
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcp -d mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
-  mcp_data:
+  pgdata:
     driver: local

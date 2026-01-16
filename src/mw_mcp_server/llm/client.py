@@ -21,10 +21,27 @@ Design Goals
 
 from __future__ import annotations
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, NamedTuple
 import httpx
 
 from ..config import settings
+
+
+# ---------------------------------------------------------------------
+# Response Types
+# ---------------------------------------------------------------------
+
+class TokenUsage(NamedTuple):
+    """Token usage from an LLM response."""
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class ChatResult(NamedTuple):
+    """Result from an LLM chat completion."""
+    message: Dict[str, Any]
+    usage: TokenUsage
 
 
 # ---------------------------------------------------------------------
@@ -115,7 +132,7 @@ class LLMClient:
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.2,
-    ) -> Dict[str, Any]:
+    ) -> ChatResult:
         """
         Execute a chat completion request.
 
@@ -135,13 +152,10 @@ class LLMClient:
 
         Returns
         -------
-        Dict[str, Any]
-            The raw assistant message object:
-            {
-                "role": "assistant",
-                "content": "...",
-                "tool_calls": [...]
-            }
+        ChatResult
+            Named tuple containing:
+            - message: The raw assistant message object
+            - usage: TokenUsage with prompt/completion/total tokens
 
         Raises
         ------
@@ -188,4 +202,13 @@ class LLMClient:
         if "role" not in message:
             raise LLMResponseError("LLM response missing 'role' field.")
 
-        return message
+        # Extract token usage from response
+        usage_data = data.get("usage", {})
+        usage = TokenUsage(
+            prompt_tokens=usage_data.get("prompt_tokens", 0),
+            completion_tokens=usage_data.get("completion_tokens", 0),
+            total_tokens=usage_data.get("total_tokens", 0),
+        )
+
+        return ChatResult(message=message, usage=usage)
+

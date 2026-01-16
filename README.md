@@ -1,81 +1,106 @@
 # mw-mcp-server
 
-A Python backend that exposes MediaWiki tools to LLMs via the Model Context Protocol (MCP). It allows LLMs to query content, run semantic queries, perform vector searches, and propose edits.
+Production-grade MCP (Model Context Protocol) server for MediaWiki + LLM integration.
 
 ## Features
 
-- **MCP Integration**: Exposes `get_page`, `run_smw_ask`, `vector_search` as tools.
-- **HTTP API**:
-    - `/chat`: Conversational endpoint.
-    - `/search`: Vector search over wiki content.
-    - `/smw-query`: Run Semantic MediaWiki `#ask` queries.
-    - `/actions/edit-page`: Propose and apply edits.
-- **Security**: JWT-based authentication for all protected endpoints.
-- **Vector Search**: Local Faiss index for semantic retrieval.
+- **Semantic Search**: Vector-based wiki content search using PostgreSQL + pgvector
+- **Chat Interface**: Multi-turn conversational AI with persistent session history
+- **MediaWiki Tools**: LLM-callable tools for page retrieval, SMW queries, and schema validation
+- **Access Control**: JWT-based auth respecting MediaWiki permissions
+- **Multi-Tenant**: Single server supports multiple wiki instances
 
-## Setup
-
-### Prerequisites
-- Python 3.11+
-- Docker (optional)
-
-### Environment Variables
-Copy `.env.example` to `.env` and fill in your credentials:
+## Quick Start
 
 ```bash
+# Clone and configure
+git clone https://github.com/labki-org/mw-mcp-server.git
+cd mw-mcp-server
 cp .env.example .env
+
+# Edit configuration
+nano .env
+
+# Start with Docker
+docker-compose up -d
 ```
 
-| Variable | Description |
-|----------|-------------|
-| `MW_API_BASE_URL` | URL to your MediaWiki API (e.g., `https://wiki.local/api.php`) |
-| `MW_BOT_USERNAME` | Bot username for edits |
-| `MW_BOT_PASSWORD` | Bot password |
-| `OPENAI_API_KEY` | Key for LLM and Embeddings |
-| `JWT_MW_TO_MCP_SECRET` | Secret for verifying JWTs FROM MWAssistant extension (64+ chars) |
-| `JWT_MCP_TO_MW_SECRET` | Secret for signing JWTs TO MediaWiki extension (64+ chars) |
+## Architecture
 
-**Authentication:** This service uses bidirectional short-lived (30-second) JWT authentication:
-- **Incoming (MW → MCP)**: Verifies JWTs from MWAssistant using `JWT_MW_TO_MCP_SECRET`
-- **Outgoing (MCP → MW)**: Generates JWTs for MediaWiki requests using `JWT_MCP_TO_MW_SECRET`
+```
+┌─────────────────────────────────────────────┐
+│              mw-mcp-server                  │
+│  ┌─────────────┐  ┌─────────────────────┐   │
+│  │ Chat Routes │  │ Embedding Routes    │   │
+│  │ /chat/*     │  │ /embeddings/*       │   │
+│  └──────┬──────┘  └──────────┬──────────┘   │
+│         │                    │              │
+│  ┌──────▼────────────────────▼──────────┐   │
+│  │         PostgreSQL + pgvector         │   │
+│  │  • chat_session / chat_message       │   │
+│  │  • embedding (vector similarity)     │   │
+│  └───────────────────────────────────────┘   │
+└─────────────────────────────────────────────┘
+```
 
+## Requirements
 
-### Running Locally
+- Python 3.11+
+- PostgreSQL 16 with pgvector extension
+- Docker (recommended)
+- OpenAI API key
 
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Run the server:
-   ```bash
-   uvicorn mw_mcp_server.main:app --reload
-   ```
+## Configuration
 
-### Running with Docker (Recommended)
-This uses `docker-compose` to automatically handle port mapping and **persistent data storage** for vector embeddings.
+See `.env.example` for all configuration options.
 
-1. Run the server:
-   ```bash
-   docker-compose up --build
-   ```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MW_API_BASE_URL` | Yes | MediaWiki API endpoint |
+| `OPENAI_API_KEY` | Yes | OpenAI API key |
+| `JWT_MW_TO_MCP_SECRET` | Yes | Shared secret with MWAssistant |
+| `JWT_MCP_TO_MW_SECRET` | Yes | Shared secret with MWAssistant |
+| `DB_PASSWORD` | Yes | PostgreSQL password |
 
-### Running with Docker (Manual)
-If you prefer not to use docker-compose, you must manually mount the data volume to preserve embeddings.
+## API Endpoints
 
-1. Build the image:
-   ```bash
-   docker build -t mw-mcp-server .
-   ```
-2. Run the container:
-   ```bash
-   docker run -p 8000:8000 \
-     --env-file .env \
-     -v "$(pwd)/data:/app/data" \
-     --name mw-mcp-server \
-     --rm \
-     mw-mcp-server
-   ```
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/chat/` | POST | Chat completion with tools |
+| `/chat/sessions` | GET | List user's chat sessions |
+| `/chat/sessions/{id}` | GET | Get full session history |
+| `/chat/sessions/{id}` | DELETE | Delete a session |
+| `/search/` | POST | Vector-based semantic search |
+| `/embeddings/page` | POST | Update page embedding |
+| `/embeddings/page` | DELETE | Delete page embedding |
+| `/embeddings/stats` | GET | Get embedding statistics |
+| `/health` | GET | Health check |
 
 ## Development
-- **Source**: `src/mw_mcp_server`
-- **Tests**: `tests/` (Run with `pytest`)
+
+```bash
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -e ".[dev,test]"
+
+# Start PostgreSQL
+docker-compose up postgres -d
+
+# Run server
+uvicorn mw_mcp_server.main:app --reload
+
+# Run tests
+pytest
+```
+
+## Documentation
+
+- [Deployment Guide](docs/DEPLOYMENT.md)
+- [Extension Integration](docs/extension_integration.md)
+
+## License
+
+MIT

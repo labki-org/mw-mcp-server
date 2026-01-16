@@ -15,12 +15,12 @@ Responsibilities
 from __future__ import annotations
 
 from typing import Optional, Dict, Any
+import re
 
 from ..wiki.api_client import MediaWikiClient
 from ..wiki.smw_client import SMWClient
 from ..auth.models import UserContext
-from ..embeddings.index import FaissIndex
-import re
+from ..db import VectorStore
 
 
 # ---------------------------------------------------------------------
@@ -124,7 +124,7 @@ async def tool_run_smw_ask(
     ask_query: str,
     user: UserContext,
     client: Optional[SMWClient] = None,
-    faiss_index: Optional[FaissIndex] = None,
+    vector_store: Optional[VectorStore] = None,
 ) -> Dict[str, Any]:
     """
     Execute a Semantic MediaWiki ASK query.
@@ -140,8 +140,8 @@ async def tool_run_smw_ask(
     client : SMWClient
         Optional testing override.
         
-    faiss_index : FaissIndex
-        Optional reference to vector index for schema validation.
+    vector_store : VectorStore
+        Optional reference to vector store for schema validation.
 
     Returns
     -------
@@ -151,13 +151,13 @@ async def tool_run_smw_ask(
     if not ask_query:
         raise ValueError("mw_run_smw_ask requires a non-empty 'ask' argument.")
 
-    if faiss_index:
+    if vector_store:
         # Extract potential property names: [[Property::Value]] or [[Property::...]]
         # Regex captures the part before '::' inside [[...]]
         matches = re.findall(r"\[\[([^:\]]+)::", ask_query)
         
         # NS_PROPERTY = 102
-        known_props = set(faiss_index.get_pages_by_namespace(102)) 
+        known_props = set(await vector_store.get_pages_by_namespace(user.wiki_id, 102)) 
         
         # Build lookup maps if we have data
         if known_props:
@@ -175,7 +175,6 @@ async def tool_run_smw_ask(
                     continue
                 
                 # 3. Check for "Has " prefix variation (Classic SMW pattern)
-                # If user wrote "Kiki", check "Property:Has Kiki"
                 stripped_name = prop_ref.replace("Property:", "").strip()
                 has_variation = f"Property:Has {stripped_name}"
                 
@@ -208,36 +207,24 @@ async def tool_run_smw_ask(
 
     client = client or smw_client
     
-    # If the LLM generates a full {{#ask:...}} block, pass the inner content
-    # or rely on the evaluator to handle it?
-    # Our PHP evaluator specifically does: "{{#ask: " . $queryArgs . "}}"
-    # So we must pass ONLY the inner args.
-    
     # Simple strip if the LLM provided the full wrapper
     clean_query = ask_query.strip()
     if clean_query.startswith("{{#ask:") and clean_query.endswith("}}"):
         # Remove {{#ask: and trailing }}
         clean_query = clean_query[7:-2].strip()
     elif clean_query.startswith("{{") and clean_query.endswith("}}"):
-         # Some other parser function? The PHP evaluator enforces #ask.
-         # So we warn or just try to strip.
          clean_query = clean_query[2:-2].strip()
          if clean_query.lower().startswith("#ask:"):
              clean_query = clean_query[5:].strip()
 
     try:
-        # The API returns {"mwassistant-smw": {"result": "..."}}
-        # But our SMWClient returns the inner data structure from _request.
         result = await client.ask(clean_query)
     except Exception as exc:
         raise ValueError(
             f"SMW ASK query failed: {type(exc).__name__}: {str(exc)}"
         ) from exc
 
-    # The result is now likely just {"result": "html string"} inside the response wrapper.
-    # We pass this back.
     if not isinstance(result, dict):
-         # If it's a string (unlikely direct return), wrap it
          return {"result": str(result)}
 
     return result

@@ -11,7 +11,7 @@ Design Principles
 - Clear separation between:
     - External service credentials
     - JWT/security configuration
-    - Embedding/vector index configuration
+    - Database configuration
 - Fully environment-driven (12-factor friendly)
 - Test-friendly via direct instantiation overrides
 """
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     )
 
     openai_model: str = Field(
-        default="gpt-5.1",
+        default="gpt-4o-mini",
         min_length=1,
         description="Default chat model for LLM completions.",
     )
@@ -71,6 +71,13 @@ class Settings(BaseSettings):
         default="text-embedding-3-large",
         min_length=1,
         description="Default model used for vector embeddings.",
+    )
+
+    embedding_dimensions: int = Field(
+        default=3072,
+        ge=256,
+        le=4096,
+        description="Dimensions of embedding vectors (must match model).",
     )
 
     # ------------------------------------------------------------------
@@ -102,19 +109,23 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
-    # Vector Index / Embedding Persistence
+    # Database Configuration (PostgreSQL + pgvector)
     # ------------------------------------------------------------------
 
-    vector_index_path: str = Field(
-        default="/app/data/faiss_index.bin",
+    database_url: str = Field(
+        default="postgresql+asyncpg://mcp:changeme@localhost:5432/mcp",
         min_length=1,
-        description="Filesystem path for the persisted FAISS index.",
+        description="SQLAlchemy async database URL for PostgreSQL.",
     )
 
-    vector_meta_path: str = Field(
-        default="/app/data/index_meta.json",
-        min_length=1,
-        description="Filesystem path for FAISS metadata.",
+    # ------------------------------------------------------------------
+    # Rate Limiting Configuration
+    # ------------------------------------------------------------------
+
+    daily_token_limit: int = Field(
+        default=100_000,
+        ge=1000,
+        description="Maximum tokens a user can consume per day. Default: 100,000 (~$0.30/day at GPT-4o-mini prices).",
     )
 
     # ------------------------------------------------------------------
@@ -124,8 +135,9 @@ class Settings(BaseSettings):
     data_root_path: str = Field(
         default="/app/data",
         min_length=1,
-        description="Root directory for tenant-scoped data (FAISS indexes, etc.).",
+        description="Root directory for tenant-scoped data.",
     )
+
 
     # ------------------------------------------------------------------
     # Namespace Access Control
@@ -173,7 +185,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="forbid",          # 🔒 No silent misconfiguration
+        extra="ignore",           # Allow extra env vars (like DB_PASSWORD)
         case_sensitive=False,
     )
 

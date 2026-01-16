@@ -2,21 +2,23 @@
 FastAPI Dependency Injection Providers
 
 This module defines reusable dependencies for routes, including:
+- Database session
 - LLM client singleton
-- Tenant-aware FAISS index lookup
+- Vector store (PostgreSQL + pgvector)
 - Embedder singleton
+- Rate limiter
 """
 
 from functools import lru_cache
+from typing import Annotated, AsyncGenerator
 
 from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..llm.client import LLMClient
-from ..embeddings.index import FaissIndex
+from ..db import get_async_session, VectorStore
+from ..db.rate_limiter import RateLimiter
 from ..embeddings.embedder import Embedder
-from ..embeddings.registry import get_tenant_index
-from ..auth.security import verify_mw_to_mcp_jwt
-from ..auth.models import UserContext
 
 
 @lru_cache
@@ -25,28 +27,32 @@ def get_llm_client() -> LLMClient:
     return LLMClient()
 
 
-def get_tenant_faiss_index(
-    user: UserContext = Depends(verify_mw_to_mcp_jwt),
-) -> FaissIndex:
-    """
-    Get the FAISS index for the authenticated user's wiki.
-
-    This function uses the wiki_id from the verified JWT to return
-    a tenant-isolated index instance.
-    """
-    return get_tenant_index(user.wiki_id)
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Get an async database session."""
+    async for session in get_async_session():
+        yield session
 
 
-# Backwards compatibility alias - routes should migrate to get_tenant_faiss_index
-def get_faiss_index(
-    user: UserContext = Depends(verify_mw_to_mcp_jwt),
-) -> FaissIndex:
+def get_vector_store(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> VectorStore:
     """
-    Deprecated: Use get_tenant_faiss_index instead.
+    Get a VectorStore instance with database session.
     
-    This alias maintains backwards compatibility while we migrate routes.
+    The VectorStore uses PostgreSQL + pgvector for similarity search.
     """
-    return get_tenant_index(user.wiki_id)
+    return VectorStore(session)
+
+
+def get_rate_limiter(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> RateLimiter:
+    """
+    Get a RateLimiter instance with database session.
+    
+    The RateLimiter tracks and enforces daily token usage limits.
+    """
+    return RateLimiter(session)
 
 
 @lru_cache

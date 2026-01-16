@@ -39,7 +39,42 @@ docker-compose -f docker-compose.prod.yml up -d
 | `OPENAI_API_KEY` | OpenAI API key |
 | `JWT_MW_TO_MCP_SECRET` | Shared with MWAssistant extension |
 | `JWT_MCP_TO_MW_SECRET` | Shared with MWAssistant extension |
-| `DATA_ROOT_PATH` | Tenant data directory (default: `/app/data`) |
+| `DB_PASSWORD` | PostgreSQL password |
+| `DAILY_TOKEN_LIMIT` | Max tokens per user per day (default: 100,000) |
+
+## Architecture
+
+The server uses PostgreSQL with pgvector for:
+- **Vector embeddings** - Semantic search over wiki content
+- **Chat sessions** - Persistent conversation history per user
+- **Token usage tracking** - Rate limiting based on daily token consumption
+
+```
+docker-compose.yml
+├── mw-mcp-server (FastAPI)
+└── postgres (pgvector/pgvector:pg16)
+```
+
+Data is persisted in Docker volumes:
+- `pgdata` - PostgreSQL database files
+
+## Rate Limiting
+
+Users are limited to a configurable number of tokens per day (default: 100,000).
+When a user exceeds their limit, they receive a 429 response with reset time.
+
+Configure via `DAILY_TOKEN_LIMIT` environment variable:
+```bash
+# Allow 50,000 tokens per user per day (~$0.15/day at GPT-4o-mini prices)
+DAILY_TOKEN_LIMIT=50000
+```
+
+View usage in the database:
+```sql
+SELECT wiki_id, user_id, usage_date, total_tokens, request_count 
+FROM token_usage 
+ORDER BY usage_date DESC;
+```
 
 ## Caddy Configuration
 
@@ -72,7 +107,7 @@ One MCP server can serve multiple wikis. Each wiki needs:
 1. **Unique `wiki_id`** in MWAssistant config
 2. **Same JWT secrets** shared with MCP server
 
-Data is isolated per-tenant at `/app/data/{wiki_id}/`.
+Data is isolated per-tenant within PostgreSQL tables.
 
 ### MediaWiki LocalSettings.php
 
@@ -93,12 +128,31 @@ curl http://localhost:8000/health
 View logs:
 ```bash
 docker logs mw-mcp-server -f
+docker logs mcp-postgres -f
+```
+
+## Database Access
+
+Connect to PostgreSQL:
+```bash
+docker exec -it mcp-postgres psql -U mcp -d mcp
+```
+
+View tables:
+```sql
+\dt                          -- List tables
+SELECT COUNT(*) FROM embedding;  -- Embedding count
+SELECT COUNT(*) FROM chat_session;  -- Session count
 ```
 
 ## Backup
 
-Backup tenant data:
+Backup PostgreSQL:
 ```bash
-docker run --rm -v mcp_data:/data -v $(pwd):/backup \
-  alpine tar czf /backup/mcp-backup.tar.gz /data
+docker exec mcp-postgres pg_dump -U mcp mcp > backup.sql
+```
+
+Restore:
+```bash
+cat backup.sql | docker exec -i mcp-postgres psql -U mcp mcp
 ```

@@ -79,7 +79,7 @@ def test_chat():
         "max_tokens": 512
     }
     
-    print(f"\nTesting LLM /chat endpoint (expecting tool usage)...")
+    print("\nTesting LLM /chat endpoint (expecting tool usage)...")
     try:
         resp = httpx.post(
             f"{SERVER_URL}/chat/",

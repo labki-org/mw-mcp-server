@@ -22,10 +22,11 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
+from sqlalchemy import text
 
 from .config import settings
 from .core.errors import unhandled_exception_handler
-from .embeddings.registry import save_all_tenant_indexes
+from .db import async_engine, Base
 
 from .api import (
     chat_routes,
@@ -72,11 +73,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     Startup:
     - Validates critical configuration
-    - Logs startup messages
+    - Initializes database connection and creates tables
+    - Enables pgvector extension
 
     Shutdown:
-    - Persists all tenant FAISS indexes to disk
-    - Performs graceful cleanup
+    - Disposes database connection pool
     """
     # ---- Startup ----
     logger.info("Starting mw-mcp-server")
@@ -91,14 +92,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"Configuration validation failed: {e}")
         raise
 
+    # Initialize database
+    try:
+        async with async_engine.begin() as conn:
+            # Enable pgvector extension
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            # Create all tables
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+        raise
+
     yield  # Application runs here
 
     # ---- Shutdown ----
     logger.info("Shutting down mw-mcp-server")
 
-    # Persist all loaded tenant indexes
-    saved_count = save_all_tenant_indexes()
-    logger.info(f"Saved {saved_count} tenant index(es) to disk")
+    # Close database connections
+    await async_engine.dispose()
+    logger.info("Database connections closed")
 
 
 # ---------------------------------------------------------------------
@@ -152,4 +165,3 @@ def create_app() -> FastAPI:
 # ---------------------------------------------------------------------
 
 app = create_app()
-

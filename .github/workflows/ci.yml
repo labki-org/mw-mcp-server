@@ -17,6 +17,21 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: mcp_test
+          POSTGRES_USER: mcp
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
     steps:
       - uses: actions/checkout@v4
       
@@ -40,6 +55,7 @@ jobs:
           OPENAI_API_KEY: sk-test-key
           JWT_MW_TO_MCP_SECRET: test-secret-mw-to-mcp-must-be-long-enough-32chars
           JWT_MCP_TO_MW_SECRET: test-secret-mcp-to-mw-must-be-long-enough-32chars
+          DATABASE_URL: postgresql+asyncpg://mcp:testpass@localhost:5432/mcp_test
         run: |
           pytest tests/ -v --tb=short
 
@@ -59,7 +75,7 @@ jobs:
         run: pip install ruff
       
       - name: Run ruff check
-        run: ruff check src/
+        run: ruff check src/ tests/
 
   docker-build:
     name: Build Docker Image
