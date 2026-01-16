@@ -33,6 +33,7 @@ from uuid import UUID
 import json
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import ChatRequest, ChatResponse, ChatMessage as ChatMessageModel
@@ -167,6 +168,7 @@ async def chat(
             session_uuid = UUID(req.session_id)
             result = await session.execute(
                 select(ChatSession)
+                .options(selectinload(ChatSession.messages))
                 .where(ChatSession.session_id == session_uuid)
                 .where(ChatSession.wiki_id == user.wiki_id)
                 .where(ChatSession.owner_user_id == user.user_id)
@@ -359,6 +361,7 @@ async def list_sessions(
     """
     result = await session.execute(
         select(ChatSession)
+        .options(selectinload(ChatSession.messages))
         .where(ChatSession.wiki_id == user.wiki_id)
         .where(ChatSession.owner_user_id == user.user_id)
         .order_by(ChatSession.updated_at.desc())
@@ -398,6 +401,7 @@ async def get_session(
 
     result = await session.execute(
         select(ChatSession)
+        .options(selectinload(ChatSession.messages))
         .where(ChatSession.session_id == session_uuid)
         .where(ChatSession.wiki_id == user.wiki_id)
         .where(ChatSession.owner_user_id == user.user_id)

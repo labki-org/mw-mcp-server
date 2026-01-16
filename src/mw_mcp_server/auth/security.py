@@ -77,7 +77,7 @@ def _decode_mw_token(token: str) -> dict:
         audience="mw-mcp-server",
         issuer="MWAssistant",
         options={
-            "require": ["iss", "aud", "iat", "exp", "user", "roles", "scope", "wiki_id"],
+            "require": ["iss", "aud", "iat", "exp", "user", "user_id", "roles", "scope", "wiki_id"],
         },
     )
 
@@ -109,7 +109,11 @@ def verify_mw_to_mcp_jwt(
     """
     token = creds.credentials
 
+    # -------------------------------------------------------------
+    # Decode Token
+    # -------------------------------------------------------------
     try:
+        # We now require 'user_id' in the token for session persistence
         payload = _decode_mw_token(token)
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -141,6 +145,7 @@ def verify_mw_to_mcp_jwt(
     # Validate required fields
     # ---------------------------------------------------------------
     username = payload.get("user")
+    user_id = payload.get("user_id")
     wiki_id = payload.get("wiki_id")
     roles = payload.get("roles")
     scopes = payload.get("scope")
@@ -151,6 +156,13 @@ def verify_mw_to_mcp_jwt(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token missing 'user' claim.",
+        )
+
+    if not user_id:
+        # Fallback for old tokens or anon users? (Currently strictly required)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing 'user_id' claim.",
         )
 
     if not wiki_id:
@@ -178,6 +190,7 @@ def verify_mw_to_mcp_jwt(
 
     return UserContext(
         username=username,
+        user_id=user_id,
         wiki_id=wiki_id,
         roles=roles,
         scopes=scopes,

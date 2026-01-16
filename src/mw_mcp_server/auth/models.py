@@ -30,6 +30,11 @@ class UserContext(BaseModel):
         description="Unique identifier for the source MediaWiki instance (tenant).",
     )
 
+    user_id: int = Field(
+        ...,
+        description="MediaWiki user ID (numeric).",
+    )
+
     roles: List[str] = Field(
         default_factory=list,
         description="List of MediaWiki user groups (roles).",
