@@ -40,5 +40,4 @@ def health() -> Dict[str, str]:
     """
     return {
         "status": "ok",
-        "mw_api": str(settings.mw_api_base_url),
     }

@@ -18,8 +18,8 @@ Design Principles
 
 from __future__ import annotations
 
-from typing import List, Dict
-from pydantic import Field, SecretStr, field_validator
+from typing import List, Dict, Optional, Any
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -69,14 +69,14 @@ class Settings(BaseSettings):
     # JWT / Security Configuration (Bidirectional)
     # ------------------------------------------------------------------
 
-    jwt_mw_to_mcp_secret: SecretStr = Field(
-        ...,
+    jwt_mw_to_mcp_secret: Optional[SecretStr] = Field(
+        default=None,
         min_length=16,
         description="HMAC secret used to verify JWTs issued by MWAssistant.",
     )
 
-    jwt_mcp_to_mw_secret: SecretStr = Field(
-        ...,
+    jwt_mcp_to_mw_secret: Optional[SecretStr] = Field(
+        default=None,
         min_length=16,
         description="HMAC secret used to sign JWTs sent to MediaWiki.",
     )
@@ -218,6 +218,24 @@ class Settings(BaseSettings):
             pass
             
         return creds_map
+
+    @model_validator(mode="after")
+    def _validate_secrets_configuration(self) -> Settings:
+        """
+        Ensure that we have at least one valid set of credentials.
+        """
+        # If we have valid wiki_creds, we are good.
+        if self.wiki_creds:
+            return self
+
+        # If no wiki_creds, we MUST have legacy secrets.
+        if not self.jwt_mw_to_mcp_secret or not self.jwt_mcp_to_mw_secret:
+            raise ValueError(
+                "Configuration Error: You must provide either WIKI_CREDS (for multi-wiki) "
+                "OR both jwt_mw_to_mcp_secret and jwt_mcp_to_mw_secret (legacy mode)."
+            )
+        
+        return self
 
 
 class WikiCredentials(BaseSettings):

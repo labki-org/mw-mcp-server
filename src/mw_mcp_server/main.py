@@ -85,8 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Fail-fast: validate critical secrets at startup
     try:
         _ = settings.openai_api_key.get_secret_value()
-        _ = settings.jwt_mw_to_mcp_secret.get_secret_value()
-        _ = settings.jwt_mcp_to_mw_secret.get_secret_value()
+
         logger.info("Configuration validated successfully")
     except Exception as e:
         logger.error(f"Configuration validation failed: {e}")
