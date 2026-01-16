@@ -54,6 +54,7 @@ class MediaWikiClient:
     def __init__(
         self,
         base_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
         timeout: float = 15.0,
     ) -> None:
         """
@@ -61,11 +62,15 @@ class MediaWikiClient:
         ----------
         base_url : Optional[str]
             MediaWiki API base URL.
+            
+        wiki_id : Optional[str]
+            Default Wiki ID for this client instance.
 
         timeout : float
             Per-request HTTP timeout in seconds.
         """
         self.base_url = base_url
+        self.wiki_id = wiki_id
         self.timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -96,11 +101,13 @@ class MediaWikiClient:
     # Core Request Logic
     # ------------------------------------------------------------------
 
+
     async def _request(
         self,
         params: Dict[str, Any],
         scopes: Optional[List[str]] = None,
         api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Perform a single authenticated GET request to the MediaWiki API.
@@ -115,24 +122,22 @@ class MediaWikiClient:
 
         api_url : Optional[str]
             Override MediaWiki API URL for this request.
+            
+        wiki_id : Optional[str]
+            Target wiki ID for signing the JWT request.
 
         Returns
         -------
         Dict[str, Any]
             Parsed JSON response.
-
-        Raises
-        ------
-        MediaWikiRequestError
-            On transport-level failure or non-2xx status.
-
-        MediaWikiResponseError
-            On invalid or non-JSON responses.
         """
         if scopes is None:
             scopes = ["page_read"]
 
-        token = create_mcp_to_mw_jwt(scopes)
+        # Use passed wiki_id or fallback to instance default
+        target_wiki_id = wiki_id or self.wiki_id
+        
+        token = create_mcp_to_mw_jwt(scopes, wiki_id=target_wiki_id)
         headers = {
             "Authorization": f"Bearer {token}",
         }
@@ -318,6 +323,7 @@ class MediaWikiClient:
             params,
             scopes=["search"],
             api_url=user.api_url if user else None,
+            wiki_id=user.wiki_id if user else None,
         )
         
         # The result is nested under 'mwassistant-keyword-search' key
@@ -354,6 +360,7 @@ class MediaWikiClient:
         
         username = user.username if isinstance(user, UserContext) else user
         api_url = user.api_url if isinstance(user, UserContext) else None
+        wiki_id = user.wiki_id if isinstance(user, UserContext) else None
 
         params = {
             "action": "mwassistant-check-access",
@@ -363,7 +370,7 @@ class MediaWikiClient:
         }
 
         try:
-            data = await self._request(params, scopes=["check_access"], api_url=api_url)
+            data = await self._request(params, scopes=["check_access"], api_url=api_url, wiki_id=wiki_id)
         except MediaWikiRequestError:
             # If the permission check fails, deny all access as a safe default
             logger.warning(

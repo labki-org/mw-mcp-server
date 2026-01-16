@@ -57,6 +57,7 @@ def create_valid_token(
         "iat": iat,
         "exp": exp,
         "user": user,
+        "user_id": 123,  # Added user_id
         "wiki_id": wiki_id,
         "roles": roles,
         "scope": scopes,
@@ -76,7 +77,16 @@ class MockCredentials:
 def mock_settings():
     """Fixture that patches settings with test values."""
     with patch("mw_mcp_server.auth.security.settings") as mock:
-        mock.jwt_mw_to_mcp_secret = SecretStr(TEST_MW_TO_MCP_SECRET)
+        from mw_mcp_server.config import WikiCredentials
+        from pydantic import SecretStr
+        
+        # Configure a default test wiki in wiki_creds
+        mock.wiki_creds = {
+            "test-wiki": WikiCredentials(
+                mw_to_mcp_secret=SecretStr(TEST_MW_TO_MCP_SECRET),
+                mcp_to_mw_secret=SecretStr(TEST_MCP_TO_MW_SECRET)
+            )
+        }
         mock.jwt_algo = TEST_JWT_ALGO
         yield mock
 
@@ -85,7 +95,15 @@ def mock_settings():
 def mock_jwt_utils_settings():
     """Fixture that patches settings for jwt_utils."""
     with patch("mw_mcp_server.auth.jwt_utils.settings") as mock:
-        mock.jwt_mcp_to_mw_secret = SecretStr(TEST_MCP_TO_MW_SECRET)
+        from mw_mcp_server.config import WikiCredentials
+        from pydantic import SecretStr
+        
+        mock.wiki_creds = {
+            "test-wiki": WikiCredentials(
+                mw_to_mcp_secret=SecretStr(TEST_MW_TO_MCP_SECRET),
+                mcp_to_mw_secret=SecretStr(TEST_MCP_TO_MW_SECRET)
+            )
+        }
         mock.jwt_algo = TEST_JWT_ALGO
         mock.jwt_ttl_seconds = 30
         yield mock
@@ -182,7 +200,7 @@ class TestMCPToMWJWT:
 
     def test_mcp_to_mw_jwt_generation(self, mock_jwt_utils_settings):
         """MCP server should generate valid JWTs for MediaWiki."""
-        token = create_mcp_to_mw_jwt(scopes=["page_read"])
+        token = create_mcp_to_mw_jwt(scopes=["page_read"], wiki_id="test-wiki")
         
         # Verify the generated token
         payload = jwt.decode(

@@ -49,10 +49,29 @@ def _validate_jwt_config() -> None:
     """
     Validate that JWT verification configuration is present.
     """
-    if not settings.jwt_mw_to_mcp_secret:
-        raise JWTVerificationError("Missing jwt_mw_to_mcp_secret in configuration.")
+    if not settings.wiki_creds:
+        raise JWTVerificationError("Missing wiki_creds in configuration.")
     if not settings.jwt_algo:
         raise JWTVerificationError("Missing JWT_ALGO in configuration.")
+
+
+def _get_verification_secret(token: str) -> str:
+    """
+    Extract wiki_id from token (unverified) and look up the corresponding secret.
+    Falls back to the legacy global secret if no specific wiki secret is found.
+    """
+    try:
+        # Decode without verification just to get the claims
+        unverified_payload = jwt.decode(token, options={"verify_signature": False})
+        wiki_id = unverified_payload.get("wiki_id")
+        
+        if wiki_id and wiki_id in settings.wiki_creds:
+            return settings.wiki_creds[wiki_id].mw_to_mcp_secret.get_secret_value()
+            
+    except jwt.PyJWTError:
+        pass  # If we can't decode, validation will fail later anyway
+
+    raise JWTVerificationError("No verification secret available for this token. 'wiki_id' matches no configured credentials.")
 
 
 def _decode_mw_token(token: str) -> dict:
@@ -69,10 +88,12 @@ def _decode_mw_token(token: str) -> dict:
     Various JWT-related exceptions, which the public wrapper handles.
     """
     _validate_jwt_config()
+    
+    secret = _get_verification_secret(token)
 
     return jwt.decode(
         token,
-        settings.jwt_mw_to_mcp_secret.get_secret_value(),
+        secret,
         algorithms=[settings.jwt_algo],
         audience="mw-mcp-server",
         issuer="MWAssistant",

@@ -37,6 +37,10 @@ dependencies = [
 
   # Numerical
   "numpy>=1.26.0,<2.0.0",
+
+  # Text Chunking
+  "tiktoken>=0.7.0,<1.0.0",
+  "langchain-text-splitters>=0.2.0,<1.0.0",
 ]
 
 ########################################

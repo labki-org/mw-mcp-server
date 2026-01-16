@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import jwt
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from ..config import settings
 
@@ -43,9 +43,9 @@ def _validate_jwt_config() -> None:
     Ensures required JWT configuration is present.
     Raises a structured exception instead of failing deep inside jwt.encode().
     """
-    if not settings.jwt_mcp_to_mw_secret:
+    if not settings.wiki_creds:
         raise JWTConfigurationError(
-            "jwt_mcp_to_mw_secret is not configured. Cannot generate JWT."
+            "wiki_creds are not configured. Cannot generate JWT."
         )
 
     if settings.jwt_ttl_seconds <= 0:
@@ -58,7 +58,7 @@ def _validate_jwt_config() -> None:
 # Public API
 # ---------------------------------------------------------------------
 
-def create_mcp_to_mw_jwt(scopes: List[str]) -> str:
+def create_mcp_to_mw_jwt(scopes: List[str], wiki_id: Optional[str] = None) -> str:
     """
     Generate a short-lived JWT for MCP → MediaWiki communication.
 
@@ -66,6 +66,10 @@ def create_mcp_to_mw_jwt(scopes: List[str]) -> str:
     ----------
     scopes : List[str]
         List of granted scopes. Example: ["page_read", "page_write", "smw_query"]
+        
+    wiki_id : Optional[str]
+        ID of the target wiki. If provided, uses the specific secret for that wiki.
+        If None, falls back to the global legacy secret.
 
     Returns
     -------
@@ -90,9 +94,18 @@ def create_mcp_to_mw_jwt(scopes: List[str]) -> str:
         "scope": scopes,               # Scope-based capabilities
         # NOTE: Additional claims like jti could be added for replay protection
     }
+    
+    # Select signing secret
+    secret = None
+    if wiki_id and wiki_id in settings.wiki_creds:
+        secret = settings.wiki_creds[wiki_id].mcp_to_mw_secret.get_secret_value()
+        
+    if not secret:
+        raise JWTConfigurationError(
+            f"No signing secret available for wiki_id='{wiki_id}'."
+        )
 
     # Signing key and algorithm
-    secret = settings.jwt_mcp_to_mw_secret.get_secret_value()
     algo = settings.jwt_algo
 
     try:

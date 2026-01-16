@@ -33,42 +33,20 @@ router = APIRouter(prefix="/embeddings", tags=["embeddings"])
 
 
 # ---------------------------------------------------------------------
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=12000,       # ~3000 tokens
+    chunk_overlap=1200,     # ~300 tokens (10%)
+    length_function=len,
+    separators=["\n\n", "\n", ".", " ", ""],
+)
+
+# ---------------------------------------------------------------------
 # Helper Functions
 # ---------------------------------------------------------------------
 
-def _chunk_text(text: str, min_length: int = 10) -> List[str]:
-    """
-    Return the full text as a single chunk if it meets minimum length requirements.
-    
-    Parameters
-    ----------
-    text : str
-        Raw page text.
-    min_length : int
-        Minimum character length required for a chunk to be embedded.
 
-    Returns
-    -------
-    List[str]
-        List containing the single trimmed text, or empty list if too short.
-    """
-    trimmed = text.strip()
-    if len(trimmed) < min_length:
-        return []
-
-    # Simple constraint: OpenAI text-embedding-3-large limit is 8191 tokens.
-    # ~4 chars per token -> ~32k chars. We use 25k chars as a safe upper bound.
-    MAX_CHUNK_SIZE = 25000
-    
-    if len(trimmed) <= MAX_CHUNK_SIZE:
-        return [trimmed]
-
-    chunks = []
-    # Naive chunking by length
-    for i in range(0, len(trimmed), MAX_CHUNK_SIZE):
-        chunks.append(trimmed[i : i + MAX_CHUNK_SIZE])
-    
-    return chunks
 
 
 # ---------------------------------------------------------------------
@@ -116,7 +94,10 @@ async def update_page_embedding(
     # -------------------------------------------------------------
     # 1. Chunk Content
     # -------------------------------------------------------------
-    text_chunks = _chunk_text(req.content)
+    # -------------------------------------------------------------
+    # 1. Chunk Content
+    # -------------------------------------------------------------
+    text_chunks = text_splitter.split_text(req.content)
 
     # -------------------------------------------------------------
     # 2. Delete Existing Page Embeddings
@@ -144,10 +125,13 @@ async def update_page_embedding(
         except (ValueError, TypeError):
             pass
 
+    # Create section_ids relative to chunk position
+    section_ids = [f"chunk_{i}" for i in range(len(text_chunks))]
+
     count = await vector_store.add_documents(
         wiki_id=user.wiki_id,
         page_titles=[req.title] * len(text_chunks),
-        section_ids=[None] * len(text_chunks),
+        section_ids=section_ids,
         namespaces=[req.namespace] * len(text_chunks),
         embeddings=embeddings,
         last_modified=last_modified,

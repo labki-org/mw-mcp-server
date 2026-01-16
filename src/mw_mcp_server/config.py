@@ -18,7 +18,7 @@ Design Principles
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Dict
 from pydantic import Field, AnyHttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -163,6 +163,7 @@ class Settings(BaseSettings):
 
         return namespaces
 
+
     # ------------------------------------------------------------------
     # Pydantic Settings Configuration
     # ------------------------------------------------------------------
@@ -173,6 +174,57 @@ class Settings(BaseSettings):
         extra="ignore",           # Allow extra env vars (like DB_PASSWORD)
         case_sensitive=False,
     )
+
+    # ------------------------------------------------------------------
+    # Multi-Wiki Credentials (JSON based)
+    # ------------------------------------------------------------------
+    
+    wiki_creds: Dict[str, WikiCredentials] = Field(
+        default_factory=dict,
+        description="Map of wiki_id to credentials. Loaded from WIKI_CREDS JSON.",
+    )
+
+    @field_validator("wiki_creds", mode="before")
+    @classmethod
+    def _parse_wiki_creds(cls, v, info):
+        """
+        Parse WIKI_CREDS JSON string into dictionary.
+        If empty, populates a default entry from legacy env vars if they exist.
+        """
+        import json
+        
+        # 1. Try to load from WIKI_CREDS env var
+        creds_map = {}
+        if isinstance(v, str) and v.strip():
+            try:
+                raw_map = json.loads(v)
+                for wiki_id, creds in raw_map.items():
+                    creds_map[wiki_id] = WikiCredentials(**creds)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON in WIKI_CREDS: {exc}")
+        elif isinstance(v, dict):
+             creds_map = {k: WikiCredentials(**val) if isinstance(val, dict) else val for k, val in v.items()}
+
+        # 2. If no WIKI_CREDS, try legacy env vars (backward compatibility)
+        # Note: We access values from info.data because validation runs after env loading
+        if not creds_map:
+            legacy_mw_secret = info.data.get("jwt_mw_to_mcp_secret")
+            legacy_mcp_secret = info.data.get("jwt_mcp_to_mw_secret")
+            
+            # If we have legacy secrets, we treat them as a "default" fallback 
+            # that can be used if a token doesn't match any specific wiki_id,
+            # or we can map them to a specific default ID.
+            # For now, let's keep the legacy secrets in the main Settings object 
+            # and use them as global fallbacks in the code.
+            pass
+            
+        return creds_map
+
+
+class WikiCredentials(BaseSettings):
+    """Credentials for a specific MediaWiki instance."""
+    mw_to_mcp_secret: SecretStr
+    mcp_to_mw_secret: SecretStr
 
 
 # ----------------------------------------------------------------------
