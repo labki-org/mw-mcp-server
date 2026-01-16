@@ -4,10 +4,11 @@ This document outlines how a MediaWiki extension should communicate with the `mw
 
 ## Authentication
 
-This service uses **bidirectional short-lived JWT authentication** with a 30-second TTL. Two separate secrets are used:
+This service uses **bidirectional short-lived JWT authentication** with a 30-second TTL.
+The server supports multiple tenants (wikis) via the `WIKI_CREDS` configuration. Each wiki has its own pair of secrets mapped by a `wiki_id`.
 
-- **`JWT_MW_TO_MCP_SECRET`**: Used by MWAssistant to sign tokens sent TO the MCP server
-- **`JWT_MCP_TO_MW_SECRET`**: Used by MCP server to sign tokens sent TO MWAssistant
+- **`mw_to_mcp_secret`**: Used by MWAssistant to sign tokens sent TO the MCP server.
+- **`mcp_to_mw_secret`**: Used by MCP server to sign tokens sent TO MWAssistant.
 
 ### MW → MCP (Extension calling Server)
 
@@ -28,6 +29,7 @@ The token must be signed with `HS256` using the `JWT_MW_TO_MCP_SECRET`. It must 
 | `iat` | number | Yes | Issued at timestamp (Unix epoch) |
 | `exp` | number | Yes | Expiration timestamp (`iat + 30` seconds) |
 | `user` | string | Yes | MediaWiki username of the user making the request |
+| `wiki_id` | string | Yes | Unique identifier for the wiki (must match `WIKI_CREDS` on server) |
 | `roles` | array | Yes | List of MediaWiki user groups (e.g., `["user", "sysop"]`) |
 | `scope` | array | Yes | List of operations this token grants access to |
 | `client_id` | string | No | Identifier for the extension (default: "MWAssistant") |
@@ -40,6 +42,7 @@ The token must be signed with `HS256` using the `JWT_MW_TO_MCP_SECRET`. It must 
   "iat": 1702345678,
   "exp": 1702345708,
   "user": "AdminUser",
+  "wiki_id": "my-corporate-wiki",
   "roles": ["sysop", "bureaucrat"],
   "scope": ["chat_completion", "search"],
   "client_id": "MWAssistant"
@@ -61,7 +64,7 @@ Each endpoint requires specific scopes:
 
 ### MCP → MW (Server calling Extension)
 
-When the MCP server makes requests back to MediaWiki (e.g., to fetch page content), it includes a JWT signed with `JWT_MCP_TO_MW_SECRET`.
+When the MCP server makes requests back to MediaWiki (e.g., to fetch page content), it includes a JWT signed with the `mcp_to_mw_secret` corresponding to the target wiki.
 
 #### Required JWT Claims (MCP → MW)
 

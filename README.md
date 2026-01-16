@@ -57,8 +57,7 @@ See `.env.example` for all configuration options.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENAI_API_KEY` | Yes | OpenAI API key |
-| `JWT_MW_TO_MCP_SECRET` | Yes | Shared secret with MWAssistant |
-| `JWT_MCP_TO_MW_SECRET` | Yes | Shared secret with MWAssistant |
+| `WIKI_CREDS` | Yes | JSON map of wiki credentials (mw_to_mcp_secret, mcp_to_mw_secret) for each wiki ID |
 | `DB_PASSWORD` | Yes | PostgreSQL password |
 
 

@@ -37,8 +37,7 @@ docker-compose -f docker-compose.prod.yml up -d
 |----------|-------------|
 
 | `OPENAI_API_KEY` | OpenAI API key |
-| `JWT_MW_TO_MCP_SECRET` | Shared with MWAssistant extension |
-| `JWT_MCP_TO_MW_SECRET` | Shared with MWAssistant extension |
+| `WIKI_CREDS` | JSON map of wiki secrets (mw_to_mcp_secret, mcp_to_mw_secret) for each wiki ID |
 | `DB_PASSWORD` | PostgreSQL password |
 | `DAILY_TOKEN_LIMIT` | Max tokens per user per day (default: 100,000) |
 
@@ -102,20 +101,29 @@ Reload Caddy: `sudo systemctl reload caddy`
 
 ## Multi-Tenant Setup
 
-One MCP server can serve multiple wikis. Each wiki needs:
+One MCP server can serve multiple wikis. Each wiki is isolated by a unique `wiki_id`.
 
-1. **Unique `wiki_id`** in MWAssistant config
-2. **Same JWT secrets** shared with MCP server
+**Server Configuration (`.env`):**
+```bash
+WIKI_CREDS='{
+  "wiki-id-1": {
+    "mw_to_mcp_secret": "long-secret-for-wiki-1-inbound",
+    "mcp_to_mw_secret": "long-secret-for-wiki-1-outbound"
+  },
+  "wiki-id-2": {
+    "mw_to_mcp_secret": "long-secret-for-wiki-2-inbound", 
+    "mcp_to_mw_secret": "long-secret-for-wiki-2-outbound"
+  }
+}'
+```
 
-Data is isolated per-tenant within PostgreSQL tables.
-
-### MediaWiki LocalSettings.php
+### MediaWiki LocalSettings.php (for "wiki-id-1")
 
 ```php
 $wgMWAssistantMCPBaseUrl = 'https://mcp.example.com';
-$wgMWAssistantWikiId = 'my-wiki';  // Unique per wiki
-$wgMWAssistantJWTMWToMCPSecret = getenv('JWT_MW_TO_MCP_SECRET');
-$wgMWAssistantJWTMCPToMWSecret = getenv('JWT_MCP_TO_MW_SECRET');
+$wgMWAssistantWikiId = 'wiki-id-1';
+$wgMWAssistantJWTMWToMCPSecret = 'long-secret-for-wiki-1-inbound';
+$wgMWAssistantJWTMCPToMWSecret = 'long-secret-for-wiki-1-outbound';
 // Optional: Explicitly set public API URL if MCP cannot detect or reach standard URL
 $wgMWAssistantWikiApiUrl = 'https://wiki.example.com/api.php';
 ```
