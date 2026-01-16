@@ -1,0 +1,19 @@
+# Caddyfile snippet for mw-mcp-server
+#
+# Add this to your main Caddyfile to expose the MCP server.
+# Ensure that the Caddy container can reach 'mw-mcp-server' (e.g., share a Docker network).
+
+mcp.your-domain.com {
+    reverse_proxy mw-mcp-server:8000
+
+    # Basic security headers
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+    }
+
+    # Logging
+    log {
+        output file /data/mcp-access.log
+    }
+}

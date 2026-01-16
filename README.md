@@ -56,11 +56,11 @@ See `.env.example` for all configuration options.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MW_API_BASE_URL` | Yes | MediaWiki API endpoint |
 | `OPENAI_API_KEY` | Yes | OpenAI API key |
 | `JWT_MW_TO_MCP_SECRET` | Yes | Shared secret with MWAssistant |
 | `JWT_MCP_TO_MW_SECRET` | Yes | Shared secret with MWAssistant |
 | `DB_PASSWORD` | Yes | PostgreSQL password |
+
 
 ## API Endpoints
 

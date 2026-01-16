@@ -56,6 +56,11 @@ class UserContext(BaseModel):
         description="Namespace IDs this user can read (from Lockdown). Used for pre-filtering vector search.",
     )
 
+    api_url: str | None = Field(
+        default=None,
+        description="Optional: The MediaWiki API URL for this specific tenant (from JWT).",
+    )
+
     model_config = ConfigDict(
         frozen=True,                # Makes UserContext immutable after creation
         arbitrary_types_allowed=False,

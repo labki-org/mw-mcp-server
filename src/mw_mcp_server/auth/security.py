@@ -188,6 +188,8 @@ def verify_mw_to_mcp_jwt(
         allowed_namespaces = []
     allowed_namespaces = [ns for ns in allowed_namespaces if isinstance(ns, int)]
 
+    api_url = payload.get("api_url")
+
     return UserContext(
         username=username,
         user_id=user_id,
@@ -196,6 +198,7 @@ def verify_mw_to_mcp_jwt(
         scopes=scopes,
         client_id=client_id,
         allowed_namespaces=allowed_namespaces,
+        api_url=api_url,
     )
 
 

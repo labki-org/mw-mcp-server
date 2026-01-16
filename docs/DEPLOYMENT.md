@@ -12,20 +12,22 @@ Deploy mw-mcp-server to a VPS with Caddy reverse proxy.
 ## Quick Start
 
 ```bash
-# 1. Clone and configure
-git clone https://github.com/labki-org/mw-mcp-server.git
+# 1. Preparation
+# Copy 'docker-compose.prod.yml' to your specific folder on the VPS
+mkdir mw-mcp-server
 cd mw-mcp-server
+# (Upload docker-compose.prod.yml here and rename to docker-compose.yml if desired)
+
+# 2. Configure Environment
+# Copy .env.example to .env and fill in values
 cp .env.example .env
-
-# 2. Generate secrets
-./scripts/generate-secrets.sh >> .env
-# Or manually:
-# openssl rand -base64 48
-
-# 3. Edit .env with your values
 nano .env
 
-# 4. Start
+# 3. Deploy
+# Pull the latest pre-built image from GitHub Container Registry
+docker-compose -f docker-compose.prod.yml pull
+
+# Start the service
 docker-compose -f docker-compose.prod.yml up -d
 ```
 
@@ -33,9 +35,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 | Variable | Description |
 |----------|-------------|
-| `MW_API_BASE_URL` | MediaWiki API URL (e.g., `https://wiki.example.com/api.php`) |
-| `MW_BOT_USERNAME` | Bot account for wiki edits |
-| `MW_BOT_PASSWORD` | Bot password |
+
 | `OPENAI_API_KEY` | OpenAI API key |
 | `JWT_MW_TO_MCP_SECRET` | Shared with MWAssistant extension |
 | `JWT_MCP_TO_MW_SECRET` | Shared with MWAssistant extension |
@@ -116,6 +116,8 @@ $wgMWAssistantMCPBaseUrl = 'https://mcp.example.com';
 $wgMWAssistantWikiId = 'my-wiki';  // Unique per wiki
 $wgMWAssistantJWTMWToMCPSecret = getenv('JWT_MW_TO_MCP_SECRET');
 $wgMWAssistantJWTMCPToMWSecret = getenv('JWT_MCP_TO_MW_SECRET');
+// Optional: Explicitly set public API URL if MCP cannot detect or reach standard URL
+$wgMWAssistantWikiApiUrl = 'https://wiki.example.com/api.php';
 ```
 
 ## Monitoring

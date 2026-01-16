@@ -65,7 +65,7 @@ async def _assert_user_can_read(
         If the user cannot read the page.
     """
     client = client or mw_client
-    access_map = await client.check_read_access([title], user.username)
+    access_map = await client.check_read_access([title], user)
 
     if not access_map.get(title, False):
         raise PermissionError(
@@ -110,7 +110,7 @@ async def tool_get_page(
     await _assert_user_can_read(user, title, client)
 
     try:
-        text = await client.get_page_wikitext(title)
+        text = await client.get_page_wikitext(title, api_url=user.api_url)
     except Exception as exc:
         # Normalize all exceptions for LLM tool loop
         raise ValueError(

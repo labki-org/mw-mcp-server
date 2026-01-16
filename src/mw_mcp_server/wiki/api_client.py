@@ -60,12 +60,12 @@ class MediaWikiClient:
         Parameters
         ----------
         base_url : Optional[str]
-            MediaWiki API base URL. Defaults to settings.mw_api_base_url.
+            MediaWiki API base URL.
 
         timeout : float
             Per-request HTTP timeout in seconds.
         """
-        self.base_url = base_url or str(settings.mw_api_base_url)
+        self.base_url = base_url
         self.timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -100,6 +100,7 @@ class MediaWikiClient:
         self,
         params: Dict[str, Any],
         scopes: Optional[List[str]] = None,
+        api_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Perform a single authenticated GET request to the MediaWiki API.
@@ -111,6 +112,9 @@ class MediaWikiClient:
 
         scopes : Optional[List[str]]
             JWT scopes for this request. Defaults to ["page_read"].
+
+        api_url : Optional[str]
+            Override MediaWiki API URL for this request.
 
         Returns
         -------
@@ -135,9 +139,17 @@ class MediaWikiClient:
 
         client = await self._get_client()
 
+        target_url = api_url or self.base_url
+        
+        if not target_url:
+            raise MediaWikiRequestError(
+                "No API URL configured. The client must be initialized with a base_url "
+                "or requests must provide a per-request 'api_url' via JWT."
+            )
+
         try:
             response = await client.get(
-                self.base_url,
+                target_url,
                 params=params,
                 headers=headers,
             )
@@ -166,7 +178,11 @@ class MediaWikiClient:
     # Public API
     # ------------------------------------------------------------------
 
-    async def get_page_wikitext(self, title: str) -> Optional[str]:
+    async def get_page_wikitext(
+        self,
+        title: str,
+        api_url: Optional[str] = None,
+    ) -> Optional[str]:
         """
         Fetch the raw wikitext of a MediaWiki page.
 
@@ -174,6 +190,9 @@ class MediaWikiClient:
         ----------
         title : str
             Full page title including namespace if applicable.
+            
+        api_url : Optional[str]
+            Target wiki API URL.
 
         Returns
         -------
@@ -192,7 +211,7 @@ class MediaWikiClient:
             "formatversion": 2,
         }
 
-        data = await self._request(params, scopes=["page_read"])
+        data = await self._request(params, scopes=["page_read"], api_url=api_url)
 
         try:
             pages = data["query"]["pages"]
@@ -211,7 +230,11 @@ class MediaWikiClient:
                 f"Malformed revision structure for page '{title}'."
             ) from exc
 
-    async def get_all_pages(self, limit: int = 500) -> List[str]:
+    async def get_all_pages(
+        self,
+        limit: int = 500,
+        api_url: Optional[str] = None,
+    ) -> List[str]:
         """
         Return a list of all page titles in the main namespace.
 
@@ -219,6 +242,9 @@ class MediaWikiClient:
         ----------
         limit : int
             Maximum number of pages to return in one call.
+        
+        api_url : Optional[str]
+            Target wiki API URL.
 
         Returns
         -------
@@ -236,7 +262,7 @@ class MediaWikiClient:
             "format": "json",
         }
 
-        data = await self._request(params, scopes=["page_read"])
+        data = await self._request(params, scopes=["page_read"], api_url=api_url)
 
         try:
             pages = data["query"]["allpages"]
@@ -288,14 +314,18 @@ class MediaWikiClient:
             params["username"] = user.username
 
         # scope "search" is required by the endpoint configuration
-        data = await self._request(params, scopes=["search"])
+        data = await self._request(
+            params,
+            scopes=["search"],
+            api_url=user.api_url if user else None,
+        )
         
         # The result is nested under 'mwassistant-keyword-search' key
         # We expect a list of dicts: {title, snippet, size, wordcount, timestamp}
         return data.get("mwassistant-keyword-search", [])
 
     async def check_read_access(
-        self, titles: List[str], username: str
+        self, titles: List[str], user: UserContext | str
     ) -> Dict[str, bool]:
         """
         Check if a user can read each page title.
@@ -309,8 +339,8 @@ class MediaWikiClient:
         titles : List[str]
             List of page titles to check.
 
-        username : str
-            MediaWiki username to check permissions for.
+        user : UserContext | str
+            MediaWiki user context (preferred) or username string to check permissions for.
 
         Returns
         -------
@@ -321,6 +351,10 @@ class MediaWikiClient:
             return {}
 
         # Join titles with pipe as MW API convention
+        
+        username = user.username if isinstance(user, UserContext) else user
+        api_url = user.api_url if isinstance(user, UserContext) else None
+
         params = {
             "action": "mwassistant-check-access",
             "titles": "|".join(titles),
@@ -329,7 +363,7 @@ class MediaWikiClient:
         }
 
         try:
-            data = await self._request(params, scopes=["check_access"])
+            data = await self._request(params, scopes=["check_access"], api_url=api_url)
         except MediaWikiRequestError:
             # If the permission check fails, deny all access as a safe default
             logger.warning(

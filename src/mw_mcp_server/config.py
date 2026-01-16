@@ -34,22 +34,7 @@ class Settings(BaseSettings):
     # MediaWiki Configuration
     # ------------------------------------------------------------------
 
-    mw_api_base_url: AnyHttpUrl = Field(
-        ...,
-        description="Base URL of the MediaWiki API endpoint.",
-    )
 
-    mw_bot_username: str = Field(
-        ...,
-        min_length=1,
-        description="Bot username for MediaWiki API authentication.",
-    )
-
-    mw_bot_password: SecretStr = Field(
-        ...,
-        min_length=1,
-        description="Bot password for MediaWiki API authentication.",
-    )
 
     # ------------------------------------------------------------------
     # OpenAI / LLM Configuration
