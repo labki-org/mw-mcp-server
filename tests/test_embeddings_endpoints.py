@@ -123,6 +123,7 @@ def test_update_page_embedding(client, mock_settings, mock_vectors, mock_embedde
     mock_vectors.delete_page.assert_awaited_once()
     mock_embedder.embed.assert_awaited_once()
     mock_vectors.add_documents.assert_awaited_once()
+    mock_vectors.commit.assert_awaited_once()
 
 def test_delete_page_embedding(client, mock_settings, mock_vectors):
     token = create_valid_token()
@@ -141,6 +142,7 @@ def test_delete_page_embedding(client, mock_settings, mock_vectors):
     assert data["status"] == "deleted"
     
     mock_vectors.delete_page.assert_awaited_once()
+    mock_vectors.commit.assert_awaited_once()
 
 def test_missing_scope_rejected(client, mock_settings):
     # Token without "embeddings" scope

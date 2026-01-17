@@ -35,6 +35,12 @@ class VectorStore:
         """
         self._session = session
 
+    async def commit(self) -> None:
+        """
+        Commit the current transaction.
+        """
+        await self._session.commit()
+
     async def add_documents(
         self,
         wiki_id: str,

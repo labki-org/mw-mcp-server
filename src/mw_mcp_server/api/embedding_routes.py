@@ -137,6 +137,8 @@ async def update_page_embedding(
         last_modified=last_modified,
     )
 
+    await vector_store.commit()
+
     return OperationResult(
         status="updated",
         count=count
@@ -157,6 +159,7 @@ async def delete_page_embedding(
     Delete all embeddings for a given wiki page.
     """
     count = await vector_store.delete_page(user.wiki_id, req.title)
+    await vector_store.commit()
 
     return OperationResult(
         status="deleted",
