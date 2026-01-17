@@ -185,19 +185,32 @@ class VectorStore:
         total_result = await self._session.execute(total_stmt)
         total_vectors = total_result.scalar() or 0
 
-        # Unique pages
+        # Unique pages and their max timestamp
         pages_stmt = (
-            select(Embedding.page_title)
+            select(
+                Embedding.page_title,
+                func.max(Embedding.last_modified)
+            )
             .where(Embedding.wiki_id == wiki_id)
-            .distinct()
+            .group_by(Embedding.page_title)
         )
         pages_result = await self._session.execute(pages_stmt)
-        unique_pages = sorted([row[0] for row in pages_result.all()])
+        
+        embedded_pages = []
+        page_timestamps = {}
+        
+        for row in pages_result.all():
+            title = row[0]
+            last_mod = row[1]
+            embedded_pages.append(title)
+            if last_mod:
+                page_timestamps[title] = last_mod.isoformat()
 
         return {
             "total_vectors": total_vectors,
-            "total_pages": len(unique_pages),
-            "embedded_pages": unique_pages,
+            "total_pages": len(embedded_pages),
+            "embedded_pages": sorted(embedded_pages),
+            "page_timestamps": page_timestamps,
         }
 
     async def rebuild(

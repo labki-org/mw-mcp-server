@@ -358,6 +358,7 @@ class MediaWikiClient:
         # Join titles with pipe as MW API convention
         
         username = user.username if isinstance(user, UserContext) else user
+        user_id = user.user_id if isinstance(user, UserContext) else None
         api_url = user.api_url if isinstance(user, UserContext) else None
         wiki_id = user.wiki_id if isinstance(user, UserContext) else None
 
@@ -367,17 +368,11 @@ class MediaWikiClient:
             "username": username,
             "format": "json",
         }
+        
+        if user_id:
+            params["user_id"] = user_id
 
-        try:
-            data = await self._request(params, scopes=["check_access"], api_url=api_url, wiki_id=wiki_id)
-        except MediaWikiRequestError:
-            # If the permission check fails, deny all access as a safe default
-            logger.warning(
-                "Permission check failed for user '%s' on %d titles",
-                username,
-                len(titles),
-            )
-            return {title: False for title in titles}
+        data = await self._request(params, scopes=["check_access"], api_url=api_url, wiki_id=wiki_id)
 
         # The result is nested under 'mwassistant-check-access' key
         result = data.get("mwassistant-check-access", {})
