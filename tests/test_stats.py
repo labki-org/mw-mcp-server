@@ -1,8 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from httpx import AsyncClient, ASGITransport
-from datetime import date, timedelta
-from typing import List, Any
 
 from mw_mcp_server.main import app
 from mw_mcp_server.db import get_async_session

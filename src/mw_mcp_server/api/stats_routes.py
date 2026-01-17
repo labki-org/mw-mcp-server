@@ -19,14 +19,12 @@ Metrics Tracked
 - Embeddings Count (Snapshot)
 """
 
-import uuid
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Header, status
 from fastapi.responses import HTMLResponse
-from fastapi.security import APIKeyHeader
-from sqlalchemy import func, select, desc
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict
 

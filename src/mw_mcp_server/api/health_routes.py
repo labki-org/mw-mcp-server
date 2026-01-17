@@ -17,7 +17,6 @@ They MUST remain:
 from fastapi import APIRouter, status
 from typing import Dict
 
-from ..config import settings
 
 router = APIRouter(tags=["health"])
 

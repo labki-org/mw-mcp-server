@@ -18,7 +18,7 @@ Design Principles
 
 from __future__ import annotations
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
