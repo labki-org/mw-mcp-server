@@ -9,9 +9,10 @@
 # Usage:
 #   docker-compose -f docker-compose.prod.yml up -d
 
+name: mw-mcp-server
+
 services:
   mw-mcp-server:
-    container_name: mw-mcp-server
     image: ghcr.io/labki-org/mw-mcp-server:${VERSION:-latest}
     
     build:
@@ -26,7 +27,7 @@ services:
       - .env
 
     environment:
-      - WORKERS=${WORKERS:-2}
+      - WORKERS=${WORKERS:-1}
       - DATABASE_URL=postgresql+asyncpg://mcp:${DB_PASSWORD}@postgres:5432/mcp
 
     depends_on:
@@ -58,11 +59,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: 2G
-        reservations:
-          cpus: "0.5"
+          cpus: "0.50"
           memory: 512M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
 
     logging:
       driver: "json-file"
@@ -70,12 +71,17 @@ services:
         max-size: "10m"
         max-file: "3"
 
+    networks:
+      web:
+        aliases:
+          - mw-mcp-server
+      internal: {}
+
   # -------------------------------
   # PostgreSQL with pgvector
   # -------------------------------
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: mcp-postgres
     restart: unless-stopped
 
     environment:
@@ -95,11 +101,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 1G
+          cpus: "0.50"
+          memory: 512M
         reservations:
-          cpus: "0.25"
-          memory: 256M
+          cpus: "0.10"
+          memory: 128M
 
     logging:
       driver: "json-file"
@@ -107,6 +113,15 @@ services:
         max-size: "10m"
         max-file: "3"
 
+    networks:
+      - internal
+
 volumes:
   pgdata:
     driver: local
+
+networks:
+  web:
+    external: true
+  internal:
+    driver: bridge
