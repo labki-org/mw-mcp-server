@@ -204,7 +204,8 @@ class VectorStore:
             last_mod = row[1]
             embedded_pages.append(title)
             if last_mod:
-                page_timestamps[title] = last_mod.isoformat()
+                # Return MediaWiki-compatible format: YYYYMMDDHHMMSS
+                page_timestamps[title] = last_mod.strftime("%Y%m%d%H%M%S")
 
         return {
             "total_vectors": total_vectors,

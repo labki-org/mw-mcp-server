@@ -64,7 +64,7 @@ async def validate_page_access(
         return {}
 
     client = client or mw_client
-    return await client.check_read_access(titles, user.username)
+    return await client.check_read_access(titles, user)
 
 
 # ---------------------------------------------------------------------

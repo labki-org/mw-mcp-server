@@ -118,10 +118,18 @@ async def update_page_embedding(
     embeddings = await embedder.embed(text_chunks)
     
     # Parse last_modified timestamp
+    # MediaWiki sends timestamps in YYYYMMDDHHMMSS format (e.g., "20260117143615")
+    # Also support ISO format for flexibility
     last_modified = None
     if req.last_modified:
+        ts = req.last_modified.strip()
         try:
-            last_modified = datetime.fromisoformat(req.last_modified.replace("Z", "+00:00"))
+            # Try MediaWiki format first: YYYYMMDDHHMMSS
+            if len(ts) == 14 and ts.isdigit():
+                last_modified = datetime.strptime(ts, "%Y%m%d%H%M%S")
+            else:
+                # Fall back to ISO format
+                last_modified = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         except (ValueError, TypeError):
             pass
 
