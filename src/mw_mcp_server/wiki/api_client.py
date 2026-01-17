@@ -186,6 +186,7 @@ class MediaWikiClient:
         self,
         title: str,
         api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Fetch the raw wikitext of a MediaWiki page.
@@ -197,6 +198,9 @@ class MediaWikiClient:
             
         api_url : Optional[str]
             Target wiki API URL.
+            
+        wiki_id : Optional[str]
+            Wiki identifier for JWT signing.
 
         Returns
         -------
@@ -215,7 +219,7 @@ class MediaWikiClient:
             "formatversion": 2,
         }
 
-        data = await self._request(params, scopes=["page_read"], api_url=api_url)
+        data = await self._request(params, scopes=["page_read"], api_url=api_url, wiki_id=wiki_id)
 
         try:
             pages = data["query"]["pages"]
@@ -367,6 +371,7 @@ class MediaWikiClient:
             "titles": "|".join(titles),
             "username": username,
             "format": "json",
+            "formatversion": 2,  # Use formatversion=2 for proper JSON boolean serialization
         }
         
         if user_id:
@@ -378,5 +383,13 @@ class MediaWikiClient:
         result = data.get("mwassistant-check-access", {})
         access_map = result.get("access", {})
 
-        # Ensure all requested titles have a response (default to False if missing)
-        return {title: access_map.get(title, False) for title in titles}
+        # With formatversion=2, MW returns actual JSON booleans
+        # Also handle legacy string format ('true'/'false') for backward compatibility
+        def to_bool(val):
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.lower() == "true"
+            return False
+
+        return {title: to_bool(access_map.get(title, False)) for title in titles}

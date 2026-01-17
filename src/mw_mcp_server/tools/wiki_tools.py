@@ -110,7 +110,7 @@ async def tool_get_page(
     await _assert_user_can_read(user, title, client)
 
     try:
-        text = await client.get_page_wikitext(title, api_url=user.api_url)
+        text = await client.get_page_wikitext(title, api_url=user.api_url, wiki_id=user.wiki_id)
     except Exception as exc:
         # Normalize all exceptions for LLM tool loop
         raise ValueError(
