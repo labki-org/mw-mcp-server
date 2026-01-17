@@ -9,6 +9,7 @@ Production-grade MCP (Model Context Protocol) server for MediaWiki + LLM integra
 - **MediaWiki Tools**: LLM-callable tools for page retrieval, SMW queries, and schema validation
 - **Access Control**: JWT-based auth respecting MediaWiki permissions
 - **Multi-Tenant**: Single server supports multiple wiki instances
+- **Usage Stats**: Admin dashboard for tracking tokens, sessions, and active users
 
 ## Quick Start
 
@@ -59,6 +60,7 @@ See `.env.example` for all configuration options.
 | `OPENAI_API_KEY` | Yes | OpenAI API key |
 | `WIKI_CREDS` | Yes | JSON map of wiki credentials (mw_to_mcp_secret, mcp_to_mw_secret) for each wiki ID |
 | `DB_PASSWORD` | Yes | PostgreSQL password |
+| `ADMIN_API_KEY` | Optional | API key for accessing the Usage Stats Dashboard |
 
 
 ## API Endpoints
@@ -73,6 +75,8 @@ See `.env.example` for all configuration options.
 | `/embeddings/page` | POST | Update page embedding |
 | `/embeddings/page` | DELETE | Delete page embedding |
 | `/embeddings/stats` | GET | Get embedding statistics |
+| `/stats/usage` | GET | Logic-level usage stats (Admin only) |
+| `/stats/dashboard` | GET | HTML Usage Dashboard (Admin only) |
 | `/health` | GET | Health check |
 
 ## Development

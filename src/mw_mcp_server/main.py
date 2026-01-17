@@ -34,6 +34,7 @@ from .api import (
     smw_routes,
     health_routes,
     embedding_routes,
+    stats_routes,
 )
 
 
@@ -155,6 +156,7 @@ def create_app() -> FastAPI:
     app.include_router(search_routes.router)
     app.include_router(smw_routes.router)
     app.include_router(embedding_routes.router)
+    app.include_router(stats_routes.router)
 
     return app
 

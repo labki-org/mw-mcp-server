@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     # JWT / Security Configuration (Bidirectional)
     # ------------------------------------------------------------------
 
+    admin_api_key: Optional[SecretStr] = Field(
+        default=None,
+        description="API key for accessing admin usage stats dashboard.",
+    )
+
     jwt_mw_to_mcp_secret: Optional[SecretStr] = Field(
         default=None,
         min_length=16,
