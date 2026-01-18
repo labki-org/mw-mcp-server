@@ -113,17 +113,23 @@ def test_update_page_embedding(client, mock_settings, mock_vectors, mock_embedde
         "last_modified": "2023-01-01T12:00:00Z"
     }
     
-    resp = client.post("/embeddings/page", json=payload, headers=headers)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "updated"
-    assert data["count"] == 10  # Mocked return value
-    
-    # Verify logic flow
-    mock_vectors.delete_page.assert_awaited_once()
-    mock_embedder.embed.assert_awaited_once()
-    mock_vectors.add_documents.assert_awaited_once()
-    mock_vectors.commit.assert_awaited_once()
+    # Mock the queue
+    with patch("mw_mcp_server.embeddings.queue.embedding_queue.enqueue", new_callable=AsyncMock) as mock_enqueue:
+        mock_enqueue.return_value = 1  # Queue size
+
+        resp = client.post("/embeddings/page", json=payload, headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "queued"
+        
+        # Verify enqueue called
+        mock_enqueue.assert_awaited_once()
+        
+        # Verify background work did NOT happen synchronously
+        mock_vectors.delete_page.assert_not_called()
+        mock_embedder.embed.assert_not_called()
+        mock_vectors.add_documents.assert_not_called()
+        mock_vectors.commit.assert_not_called()
 
 def test_delete_page_embedding(client, mock_settings, mock_vectors):
     token = create_valid_token()

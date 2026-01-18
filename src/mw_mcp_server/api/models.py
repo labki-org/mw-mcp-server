@@ -44,7 +44,7 @@ class OperationResult(BaseModel):
     Standardized mutation operation result.
     Used for create/update/delete-style endpoints.
     """
-    status: Literal["updated", "deleted", "created", "ok"]
+    status: Literal["updated", "deleted", "created", "ok", "queued"]
     count: Optional[int] = Field(default=None, ge=0)
     details: Optional[Dict[str, Any]] = None
 
