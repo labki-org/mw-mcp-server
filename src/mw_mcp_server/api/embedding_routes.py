@@ -77,80 +77,48 @@ async def get_embedding_stats(
 async def update_page_embedding(
     req: EmbeddingUpdatePageRequest,
     user: Annotated[UserContext, Depends(require_scopes("embeddings"))],
-    vector_store: Annotated[VectorStore, Depends(get_vector_store)],
-    embedder: Annotated[Embedder, Depends(get_embedder)],
 ) -> OperationResult:
     """
-    Create or update embeddings for a wiki page.
-
-    Workflow
-    --------
-    1. Chunk page content into paragraphs.
-    2. Delete any existing embeddings for the page.
-    3. Embed the new content.
-    4. Add new vectors to the database.
+    Enqueue a job to create or update embeddings for a wiki page.
+    Returns immediately with stats='queued'.
     """
+    try:
+        # Parse timestamp first (synchronous check)
+        last_modified = None
+        if req.last_modified:
+            ts = req.last_modified.strip()
+            try:
+                if len(ts) == 14 and ts.isdigit():
+                    last_modified = datetime.strptime(ts, "%Y%m%d%H%M%S")
+                else:
+                    last_modified = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
 
-    # -------------------------------------------------------------
-    # 1. Chunk Content
-    # -------------------------------------------------------------
-    # -------------------------------------------------------------
-    # 1. Chunk Content
-    # -------------------------------------------------------------
-    text_chunks = text_splitter.split_text(req.content)
-
-    # -------------------------------------------------------------
-    # 2. Delete Existing Page Embeddings
-    # -------------------------------------------------------------
-    await vector_store.delete_page(user.wiki_id, req.title)
-
-    # If no valid content remains after chunking, exit early
-    if not text_chunks:
-        return OperationResult(
-            status="deleted",
-            count=0,
-            details={"reason": "empty_content_after_chunking"}
+        # Create job
+        from ..embeddings.queue import EmbeddingJob, embedding_queue
+        
+        job = EmbeddingJob(
+            wiki_id=user.wiki_id,
+            title=req.title,
+            content=req.content,
+            namespace=req.namespace,
+            last_modified=last_modified
         )
 
-    # -------------------------------------------------------------
-    # 3. Embed & Add to Index
-    # -------------------------------------------------------------
-    embeddings = await embedder.embed(text_chunks)
-    
-    # Parse last_modified timestamp
-    # MediaWiki sends timestamps in YYYYMMDDHHMMSS format (e.g., "20260117143615")
-    # Also support ISO format for flexibility
-    last_modified = None
-    if req.last_modified:
-        ts = req.last_modified.strip()
-        try:
-            # Try MediaWiki format first: YYYYMMDDHHMMSS
-            if len(ts) == 14 and ts.isdigit():
-                last_modified = datetime.strptime(ts, "%Y%m%d%H%M%S")
-            else:
-                # Fall back to ISO format
-                last_modified = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
-            pass
+        # Enqueue
+        qsize = await embedding_queue.enqueue(job)
 
-    # Create section_ids relative to chunk position
-    section_ids = [f"chunk_{i}" for i in range(len(text_chunks))]
-
-    count = await vector_store.add_documents(
-        wiki_id=user.wiki_id,
-        page_titles=[req.title] * len(text_chunks),
-        section_ids=section_ids,
-        namespaces=[req.namespace] * len(text_chunks),
-        embeddings=embeddings,
-        last_modified=last_modified,
-    )
-
-    await vector_store.commit()
-
-    return OperationResult(
-        status="updated",
-        count=count
-    )
+        # Return immediate success
+        return OperationResult(
+            status="queued",
+            count=0,
+            details={"queue_size": qsize}
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 @router.delete(

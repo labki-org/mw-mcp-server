@@ -104,10 +104,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"Database initialization failed: {e}")
         raise
 
+    # Start background worker
+    import asyncio
+    from .embeddings.queue import process_embeddings_worker_task
+    worker_task = asyncio.create_task(process_embeddings_worker_task())
+    logger.info("Background embedding worker started")
+
     yield  # Application runs here
 
     # ---- Shutdown ----
     logger.info("Shutting down mw-mcp-server")
+
+    # Cancel background worker
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        logger.info("Background embedding worker cancelled cleanly")
 
     # Close database connections
     await async_engine.dispose()
