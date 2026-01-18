@@ -23,30 +23,15 @@ from .models import (
     EmbeddingStatsResponse,
     OperationResult,
 )
-from .dependencies import get_vector_store, get_embedder
+from .dependencies import get_vector_store
 from ..auth.security import require_scopes
 from ..auth.models import UserContext
 from ..db import VectorStore
-from ..embeddings.embedder import Embedder
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/embeddings", tags=["embeddings"])
-
-
-# ---------------------------------------------------------------------
-
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=12000,       # ~3000 tokens
-    chunk_overlap=1200,     # ~300 tokens (10%)
-    length_function=len,
-    separators=["\n\n", "\n", ".", " ", ""],
-)
-
-# ---------------------------------------------------------------------
-# Helper Functions
-# ---------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------
@@ -115,9 +100,8 @@ async def update_page_embedding(
             count=0,
             details={"queue_size": qsize}
         )
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
+    except Exception:
+        logger.exception("Failed to enqueue embedding job")
         raise
 
 

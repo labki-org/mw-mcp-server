@@ -8,7 +8,6 @@ from typing import Optional
 from datetime import datetime
 
 from ..db import VectorStore, AsyncSessionLocal
-from ..auth.models import UserContext
 from .embedder import Embedder
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -81,7 +80,7 @@ async def process_embeddings_worker_task():
         except asyncio.CancelledError:
             logger.info("Embedding worker cancelled.")
             break
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in embedding worker")
             # Don't break the loop on random errors
             continue
