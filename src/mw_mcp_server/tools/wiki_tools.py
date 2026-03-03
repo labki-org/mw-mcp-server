@@ -151,6 +151,13 @@ async def tool_run_smw_ask(
     if not ask_query:
         raise ValueError("mw_run_smw_ask requires a non-empty 'ask' argument.")
 
+    # Early deny: empty allowed_namespaces means user has no read access.
+    # SMW does not respect Lockdown restrictions natively; the MW endpoint
+    # post-filters results, but we can short-circuit here for users with
+    # zero namespace access (consistent with vector search behaviour).
+    if not user.allowed_namespaces:
+        return {"result": "", "filtered_count": 0}
+
     if vector_store:
         # Extract potential property names: [[Property::Value]] or [[Property::...]]
         # Regex captures the part before '::' inside [[...]]
