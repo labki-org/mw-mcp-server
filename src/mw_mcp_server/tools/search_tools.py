@@ -113,6 +113,12 @@ async def tool_vector_search(
         Filtered, ranked results with text snippets.
     """
     # -------------------------------------------------------------
+    # Early deny: empty allowed_namespaces means no access
+    # -------------------------------------------------------------
+    if not user.allowed_namespaces:
+        return []
+
+    # -------------------------------------------------------------
     # Embed the query text
     # -------------------------------------------------------------
     embeddings = await embedder.embed([query])
@@ -129,7 +135,7 @@ async def tool_vector_search(
             wiki_id=user.wiki_id,
             query_embedding=q_emb,
             k=k * 3,  # Over-query to allow for filtering
-            namespace_filter=user.allowed_namespaces if user.allowed_namespaces else None,
+            namespace_filter=user.allowed_namespaces,
         )
     except Exception as exc:
         logger.exception("Vector search failed")

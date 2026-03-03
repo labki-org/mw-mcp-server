@@ -30,6 +30,7 @@ Security Model
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Annotated, List, Dict, Any, Optional
 from uuid import UUID
+import asyncio
 import json
 
 from sqlalchemy import select
@@ -78,25 +79,39 @@ def _append_tool_result(
     })
 
 
-async def _get_schema_context(vector_store: VectorStore, wiki_id: str) -> str:
-    """Build schema context from vector store for system prompt."""
-    SCHEMA_CAP = 100 
-    
+async def _get_schema_context(
+    vector_store: VectorStore,
+    wiki_id: str,
+    allowed_namespaces: Optional[list] = None,
+) -> str:
+    """Build schema context from vector store for system prompt.
+
+    Only includes categories/properties the user has namespace access to.
+    """
+    SCHEMA_CAP = 100
+
     # NS_CATEGORY = 14, NS_PROPERTY = 102
-    cats = await vector_store.get_pages_by_namespace(wiki_id, 14)
-    props = await vector_store.get_pages_by_namespace(wiki_id, 102)
-    
+    fetch_cats = allowed_namespaces is None or 14 in (allowed_namespaces or [])
+    fetch_props = allowed_namespaces is None or 102 in (allowed_namespaces or [])
+
+    cats_coro = vector_store.get_pages_by_namespace(wiki_id, 14) if fetch_cats else asyncio.sleep(0)
+    props_coro = vector_store.get_pages_by_namespace(wiki_id, 102) if fetch_props else asyncio.sleep(0)
+
+    cats_result, props_result = await asyncio.gather(cats_coro, props_coro)
+    cats = cats_result if fetch_cats else []
+    props = props_result if fetch_props else []
+
     schema_context = "\n\n[KNOWN SCHEMA ELEMENTS (Truncated if > 100)]\n"
     schema_context += f"Categories (~{len(cats)}): " + ", ".join(cats[:SCHEMA_CAP])
     if len(cats) > SCHEMA_CAP:
         schema_context += "..."
     schema_context += "\n"
-    
+
     schema_context += f"Properties (~{len(props)}): " + ", ".join(props[:SCHEMA_CAP])
     if len(props) > SCHEMA_CAP:
         schema_context += "..."
     schema_context += "\n[END SCHEMA CONTEXT]\n\n"
-    
+
     return schema_context
 
 
@@ -198,7 +213,7 @@ async def chat(
     # 2. Build System Prompt with Schema Context
     # -------------------------------------------------------------
     base_prompt = EDITOR_SYSTEM_PROMPT if req.context == "editor" else CHAT_SYSTEM_PROMPT
-    schema_context = await _get_schema_context(vector_store, user.wiki_id)
+    schema_context = await _get_schema_context(vector_store, user.wiki_id, allowed_namespaces=user.allowed_namespaces)
     system_prompt = base_prompt + schema_context
 
     # -------------------------------------------------------------

@@ -110,7 +110,7 @@ async def tool_get_page(
     await _assert_user_can_read(user, title, client)
 
     try:
-        text = await client.get_page_wikitext(title, api_url=user.api_url, wiki_id=user.wiki_id)
+        text = await client.get_page_wikitext(title, api_url=user.api_url, wiki_id=user.wiki_id, user=user)
     except Exception as exc:
         # Normalize all exceptions for LLM tool loop
         raise ValueError(
@@ -150,6 +150,13 @@ async def tool_run_smw_ask(
     """
     if not ask_query:
         raise ValueError("mw_run_smw_ask requires a non-empty 'ask' argument.")
+
+    # Early deny: empty allowed_namespaces means user has no read access.
+    # SMW does not respect Lockdown restrictions natively; the MW endpoint
+    # post-filters results, but we can short-circuit here for users with
+    # zero namespace access (consistent with vector search behaviour).
+    if not user.allowed_namespaces:
+        return {"result": "", "filtered_count": 0}
 
     if vector_store:
         # Extract potential property names: [[Property::Value]] or [[Property::...]]
@@ -218,7 +225,7 @@ async def tool_run_smw_ask(
              clean_query = clean_query[5:].strip()
 
     try:
-        result = await client.ask(clean_query)
+        result = await client.ask(clean_query, user=user)
     except Exception as exc:
         raise ValueError(
             f"SMW ASK query failed: {type(exc).__name__}: {str(exc)}"

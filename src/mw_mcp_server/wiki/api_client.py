@@ -187,29 +187,68 @@ class MediaWikiClient:
         title: str,
         api_url: Optional[str] = None,
         wiki_id: Optional[str] = None,
+        user: Optional["UserContext"] = None,
     ) -> Optional[str]:
         """
         Fetch the raw wikitext of a MediaWiki page.
+
+        When a user context is provided, uses the permission-aware
+        mwassistant-page endpoint which respects Lockdown restrictions.
+        Otherwise falls back to standard action=query (for admin/embedding scripts).
 
         Parameters
         ----------
         title : str
             Full page title including namespace if applicable.
-            
+
         api_url : Optional[str]
             Target wiki API URL.
-            
+
         wiki_id : Optional[str]
             Wiki identifier for JWT signing.
+
+        user : Optional[UserContext]
+            User context for permission-aware fetch. When provided,
+            uses the mwassistant-page endpoint.
 
         Returns
         -------
         Optional[str]
-            Raw wikitext if the page exists, otherwise None.
+            Raw wikitext if the page exists and is accessible, otherwise None.
         """
         if not title:
             raise ValueError("Page title must be non-empty.")
 
+        # Permission-aware path: use mwassistant-page endpoint
+        if user is not None:
+            params: Dict[str, Any] = {
+                "action": "mwassistant-page",
+                "title": title,
+                "format": "json",
+                "formatversion": 2,
+            }
+            if user.username:
+                params["username"] = user.username
+            if user.user_id:
+                params["user_id"] = user.user_id
+
+            data = await self._request(
+                params,
+                scopes=["page_read"],
+                api_url=user.api_url or api_url,
+                wiki_id=user.wiki_id or wiki_id,
+            )
+
+            result = data.get("mwassistant-page", {})
+            if result.get("error") == "permission-denied":
+                raise PermissionError(
+                    f"User '{user.username}' does not have read access to page: {title}"
+                )
+            if not result.get("exists", False):
+                return None
+            return result.get("wikitext")
+
+        # Legacy path: standard action=query (no user permission checks)
         params = {
             "action": "query",
             "prop": "revisions",

@@ -15,10 +15,13 @@ Design Goals
 
 from __future__ import annotations
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 import logging
 
 from .api_client import MediaWikiClient, MediaWikiRequestError, MediaWikiResponseError
+
+if TYPE_CHECKING:
+    from ..auth.models import UserContext
 
 logger = logging.getLogger("mcp.smw")
 
@@ -61,6 +64,7 @@ class SMWClient:
         self,
         ask_query: str,
         params: Optional[Dict[str, Any]] = None,
+        user: Optional["UserContext"] = None,
     ) -> Dict[str, Any]:
         """
         Execute a Semantic MediaWiki #ask query.
@@ -72,6 +76,11 @@ class SMWClient:
 
         params : Optional[Dict[str, Any]]
             Optional additional MediaWiki API parameters.
+
+        user : Optional[UserContext]
+            User context for permission-aware query execution.
+            When provided, forwards username/user_id so the MW endpoint
+            resolves the correct user for permission checks.
 
         Returns
         -------
@@ -89,11 +98,18 @@ class SMWClient:
         if not ask_query:
             raise ValueError("SMW ask query must be non-empty.")
 
-        request_params = {
+        request_params: Dict[str, Any] = {
             "action": "mwassistant-smw",
             "query": ask_query,
             "format": "json",
         }
+
+        # Forward user identity for permission-aware query execution
+        if user is not None:
+            if user.username:
+                request_params["username"] = user.username
+            if user.user_id:
+                request_params["user_id"] = user.user_id
 
         if params:
             request_params.update(params)
@@ -103,6 +119,8 @@ class SMWClient:
             data = await self._mw._request(
                 request_params,
                 scopes=["smw_query"],
+                api_url=user.api_url if user else None,
+                wiki_id=user.wiki_id if user else None,
             )
         except (MediaWikiRequestError, MediaWikiResponseError) as exc:
             logger.error(
