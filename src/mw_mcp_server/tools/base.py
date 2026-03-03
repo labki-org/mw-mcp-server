@@ -115,6 +115,7 @@ async def _handle_get_categories(
         prefix=args.get("prefix"),
         names=args.get("names"),
         limit=args.get("limit", 50),
+        allowed_namespaces=user.allowed_namespaces,
     )
 
 
@@ -130,6 +131,7 @@ async def _handle_get_properties(
         prefix=args.get("prefix"),
         names=args.get("names"),
         limit=args.get("limit", 50),
+        allowed_namespaces=user.allowed_namespaces,
     )
 
 
@@ -167,7 +169,17 @@ async def _handle_list_pages(
                 if normalized in mapping:
                     ns_id = mapping[normalized]
                 else:
-                    raise ValueError(f"Unknown namespace alias: '{raw_ns}'. Use an ID or standard name.")
+                    # Unknown name — try prefix-based search instead of failing.
+                    # Custom namespaces (e.g. "Private") aren't in the static map,
+                    # so search for pages whose title starts with "Private:".
+                    return await tool_list_pages(
+                        vector_store=vector_store,
+                        wiki_id=user.wiki_id,
+                        namespace=None,
+                        prefix=f"{raw_ns}:",
+                        limit=args.get("limit", 50),
+                        allowed_namespaces=user.allowed_namespaces,
+                    )
         
     return await tool_list_pages(
         vector_store=vector_store,
@@ -175,6 +187,7 @@ async def _handle_list_pages(
         namespace=ns_id,
         prefix=args.get("prefix"),
         limit=args.get("limit", 50),
+        allowed_namespaces=user.allowed_namespaces,
     )
 
 

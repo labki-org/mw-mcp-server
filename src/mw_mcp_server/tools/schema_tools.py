@@ -22,14 +22,19 @@ async def tool_get_categories(
     prefix: Optional[str] = None,
     names: Optional[List[str]] = None,
     limit: int = 50,
+    allowed_namespaces: Optional[List[int]] = None,
     **kwargs: Any,
 ) -> List[str]:
     """
     Retrieve existing category pages from the index.
-    
+
     If `names` is provided, checks for existence of specific categories.
     Otherwise, lists categories matching `prefix`.
     """
+    # Deny if user cannot read Category namespace
+    if allowed_namespaces is not None and NS_CATEGORY not in allowed_namespaces:
+        return []
+
     if names:
         # Validation Mode: Check specific names
         all_cats = set(await vector_store.get_pages_by_namespace(wiki_id, NS_CATEGORY))
@@ -53,11 +58,16 @@ async def tool_get_properties(
     prefix: Optional[str] = None,
     names: Optional[List[str]] = None,
     limit: int = 50,
+    allowed_namespaces: Optional[List[int]] = None,
     **kwargs: Any,
 ) -> List[str]:
     """
     Retrieve existing property pages from the index.
     """
+    # Deny if user cannot read Property namespace
+    if allowed_namespaces is not None and NS_PROPERTY not in allowed_namespaces:
+        return []
+
     if names:
         all_props = set(await vector_store.get_pages_by_namespace(wiki_id, NS_PROPERTY))
         valid_items = []
@@ -78,10 +88,20 @@ async def tool_list_pages(
     namespace: Optional[int] = None,
     prefix: Optional[str] = None,
     limit: int = 50,
+    allowed_namespaces: Optional[List[int]] = None,
     **kwargs: Any,
 ) -> List[str]:
     """
     Retrieve existing pages from the index for a given namespace.
     """
+    # Deny if user has no namespace access at all
+    if allowed_namespaces is not None and not allowed_namespaces:
+        return []
+
+    # Deny if the requested namespace is not in user's allowed list
+    if allowed_namespaces is not None and namespace is not None:
+        if namespace not in allowed_namespaces:
+            return []
+
     results = await vector_store.get_pages_by_namespace(wiki_id, namespace, pattern=prefix)
     return results[:limit]
