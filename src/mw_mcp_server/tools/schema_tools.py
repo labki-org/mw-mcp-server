@@ -103,5 +103,10 @@ async def tool_list_pages(
         if namespace not in allowed_namespaces:
             return []
 
+    # When namespace is None (all namespaces) but user has restrictions,
+    # deny the broad query to prevent leaking pages from restricted namespaces.
+    if allowed_namespaces is not None and namespace is None:
+        return []
+
     results = await vector_store.get_pages_by_namespace(wiki_id, namespace, pattern=prefix)
     return results[:limit]

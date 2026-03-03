@@ -30,6 +30,7 @@ Security Model
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Annotated, List, Dict, Any, Optional
 from uuid import UUID
+import asyncio
 import json
 
 from sqlalchemy import select
@@ -90,14 +91,15 @@ async def _get_schema_context(
     SCHEMA_CAP = 100
 
     # NS_CATEGORY = 14, NS_PROPERTY = 102
-    cats = []
-    props = []
+    fetch_cats = allowed_namespaces is None or 14 in (allowed_namespaces or [])
+    fetch_props = allowed_namespaces is None or 102 in (allowed_namespaces or [])
 
-    if allowed_namespaces is None or 14 in allowed_namespaces:
-        cats = await vector_store.get_pages_by_namespace(wiki_id, 14)
+    cats_coro = vector_store.get_pages_by_namespace(wiki_id, 14) if fetch_cats else asyncio.sleep(0)
+    props_coro = vector_store.get_pages_by_namespace(wiki_id, 102) if fetch_props else asyncio.sleep(0)
 
-    if allowed_namespaces is None or 102 in allowed_namespaces:
-        props = await vector_store.get_pages_by_namespace(wiki_id, 102)
+    cats_result, props_result = await asyncio.gather(cats_coro, props_coro)
+    cats = cats_result if fetch_cats else []
+    props = props_result if fetch_props else []
 
     schema_context = "\n\n[KNOWN SCHEMA ELEMENTS (Truncated if > 100)]\n"
     schema_context += f"Categories (~{len(cats)}): " + ", ".join(cats[:SCHEMA_CAP])
