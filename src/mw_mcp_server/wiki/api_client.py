@@ -176,6 +176,28 @@ class MediaWikiClient:
                 "MediaWiki returned non-JSON response."
             ) from exc
 
+        # MediaWiki API often returns errors with HTTP 200.
+        # Detect and surface them instead of silently returning partial data.
+        if "error" in data:
+            error_info = data["error"]
+            code = error_info.get("code", "unknown")
+            info = error_info.get("info", "No details provided")
+            logger.error("MediaWiki API error: [%s] %s (action=%s)", code, info, params.get("action"))
+            raise MediaWikiResponseError(
+                f"MediaWiki API error [{code}]: {info}"
+            )
+
+        if "errors" in data:
+            errors = data["errors"]
+            if errors:
+                first = errors[0] if isinstance(errors, list) else errors
+                code = first.get("code", "unknown") if isinstance(first, dict) else "unknown"
+                text = first.get("text", str(first)) if isinstance(first, dict) else str(first)
+                logger.error("MediaWiki API error: [%s] %s (action=%s)", code, text, params.get("action"))
+                raise MediaWikiResponseError(
+                    f"MediaWiki API error [{code}]: {text}"
+                )
+
         return data
 
     # ------------------------------------------------------------------
