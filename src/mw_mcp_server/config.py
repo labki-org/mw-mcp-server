@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     )
 
     openai_model: str = Field(
-        default="gpt-4o-mini",
+        default="gpt-4.1-mini",
         min_length=1,
         description="Default chat model for LLM completions.",
     )
@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     daily_token_limit: int = Field(
         default=100_000,
         ge=1000,
-        description="Maximum tokens a user can consume per day. Default: 100,000 (~$0.30/day at GPT-4o-mini prices).",
+        description="Maximum tokens a user can consume per day. Default: 100,000 (~$0.80/day at GPT-4.1-mini prices).",
     )
 
     # ------------------------------------------------------------------

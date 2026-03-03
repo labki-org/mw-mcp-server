@@ -64,7 +64,7 @@ When a user exceeds their limit, they receive a 429 response with reset time.
 
 Configure via `DAILY_TOKEN_LIMIT` environment variable:
 ```bash
-# Allow 50,000 tokens per user per day (~$0.15/day at GPT-4o-mini prices)
+# Allow 50,000 tokens per user per day (~$0.40/day at GPT-4.1-mini prices)
 DAILY_TOKEN_LIMIT=50000
 ```
 
