@@ -15,6 +15,7 @@ Design Goals
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
 import logging
 import httpx
@@ -23,6 +24,17 @@ from ..auth.jwt_utils import create_mcp_to_mw_jwt
 from ..auth.models import UserContext
 
 logger = logging.getLogger("mcp.mediawiki")
+
+
+# ---------------------------------------------------------------------
+# Data Classes
+# ---------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PageContent:
+    """Result of fetching page wikitext, optionally including revision timestamp."""
+    wikitext: Optional[str]
+    timestamp: Optional[str] = None
 
 
 # ---------------------------------------------------------------------
@@ -101,7 +113,7 @@ class MediaWikiClient:
     # ------------------------------------------------------------------
 
 
-    async def _request(
+    async def request(
         self,
         params: Dict[str, Any],
         scopes: Optional[List[str]] = None,
@@ -201,6 +213,29 @@ class MediaWikiClient:
         return data
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_first_page(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Extract the first page from a standard action=query response.
+
+        Returns the page dict, or None if the page is missing.
+        Raises MediaWikiResponseError if the response structure is malformed.
+        """
+        try:
+            pages = data["query"]["pages"]
+        except KeyError as exc:
+            raise MediaWikiResponseError(
+                "Malformed MediaWiki response: missing query.pages."
+            ) from exc
+
+        if not pages or "missing" in pages[0]:
+            return None
+        return pages[0]
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -210,7 +245,7 @@ class MediaWikiClient:
         api_url: Optional[str] = None,
         wiki_id: Optional[str] = None,
         user: Optional["UserContext"] = None,
-    ) -> Optional[str]:
+    ) -> PageContent:
         """
         Fetch the raw wikitext of a MediaWiki page.
 
@@ -235,8 +270,9 @@ class MediaWikiClient:
 
         Returns
         -------
-        Optional[str]
-            Raw wikitext if the page exists and is accessible, otherwise None.
+        PageContent
+            Wikitext and optional revision timestamp. Wikitext is None
+            if the page does not exist or is not accessible.
         """
         if not title:
             raise ValueError("Page title must be non-empty.")
@@ -254,7 +290,7 @@ class MediaWikiClient:
             if user.user_id:
                 params["user_id"] = user.user_id
 
-            data = await self._request(
+            data = await self.request(
                 params,
                 scopes=["page_read"],
                 api_url=user.api_url or api_url,
@@ -267,37 +303,164 @@ class MediaWikiClient:
                     f"User '{user.username}' does not have read access to page: {title}"
                 )
             if not result.get("exists", False):
-                return None
-            return result.get("wikitext")
+                return PageContent(wikitext=None)
+            return PageContent(
+                wikitext=result.get("wikitext"),
+                timestamp=result.get("timestamp"),
+            )
 
         # Legacy path: standard action=query (no user permission checks)
         params = {
             "action": "query",
             "prop": "revisions",
-            "rvprop": "content",
+            "rvprop": "content|timestamp",
             "titles": title,
             "format": "json",
             "formatversion": 2,
         }
 
-        data = await self._request(params, scopes=["page_read"], api_url=api_url, wiki_id=wiki_id)
+        data = await self.request(params, scopes=["page_read"], api_url=api_url, wiki_id=wiki_id)
+        page = self._extract_first_page(data)
+        if page is None:
+            return PageContent(wikitext=None)
 
         try:
-            pages = data["query"]["pages"]
-        except KeyError as exc:
-            raise MediaWikiResponseError(
-                "Malformed MediaWiki response: missing query.pages."
-            ) from exc
-
-        if not pages or "missing" in pages[0]:
-            return None
-
-        try:
-            return pages[0]["revisions"][0]["content"]
+            rev = page["revisions"][0]
+            return PageContent(
+                wikitext=rev["content"],
+                timestamp=rev.get("timestamp"),
+            )
         except (KeyError, IndexError, TypeError) as exc:
             raise MediaWikiResponseError(
                 f"Malformed revision structure for page '{title}'."
             ) from exc
+
+    async def get_page_info(
+        self,
+        title: str,
+        api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
+        user: Optional["UserContext"] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch lightweight metadata about a page (existence, size, last modified, namespace).
+
+        Returns None if the page does not exist.
+        """
+        if not title:
+            raise ValueError("Page title must be non-empty.")
+
+        params: Dict[str, Any] = {
+            "action": "query",
+            "prop": "info",
+            "titles": title,
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        data = await self.request(
+            params,
+            scopes=["page_read"],
+            api_url=user.api_url if user else api_url,
+            wiki_id=user.wiki_id if user else wiki_id,
+        )
+        page = self._extract_first_page(data)
+        if page is None:
+            return None
+
+        return {
+            "title": page.get("title", title),
+            "pageid": page.get("pageid"),
+            "namespace": page.get("ns", 0),
+            "length": page.get("length", 0),
+            "last_modified": page.get("touched"),
+        }
+
+    async def get_page_revision_timestamp(
+        self,
+        title: str,
+        api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
+        user: Optional["UserContext"] = None,
+    ) -> Optional[str]:
+        """
+        Fetch the latest revision timestamp for a page.
+
+        Returns an ISO 8601 timestamp string, or None if the page does not exist.
+        """
+        if not title:
+            raise ValueError("Page title must be non-empty.")
+
+        params: Dict[str, Any] = {
+            "action": "query",
+            "prop": "revisions",
+            "rvprop": "timestamp",
+            "titles": title,
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        data = await self.request(
+            params,
+            scopes=["page_read"],
+            api_url=user.api_url if user else api_url,
+            wiki_id=user.wiki_id if user else wiki_id,
+        )
+        page = self._extract_first_page(data)
+        if page is None:
+            return None
+
+        try:
+            return page["revisions"][0]["timestamp"]
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    async def get_category_members(
+        self,
+        category: str,
+        limit: int = 50,
+        api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
+        user: Optional["UserContext"] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List pages in a given category.
+
+        Parameters
+        ----------
+        category : str
+            Category name (with or without 'Category:' prefix).
+        limit : int
+            Maximum members to return.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of dicts with keys: title, ns, pageid.
+        """
+        if not category.startswith("Category:"):
+            category = f"Category:{category}"
+
+        params: Dict[str, Any] = {
+            "action": "query",
+            "list": "categorymembers",
+            "cmtitle": category,
+            "cmlimit": min(limit, 500),
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        data = await self.request(
+            params,
+            scopes=["page_read"],
+            api_url=user.api_url if user else api_url,
+            wiki_id=user.wiki_id if user else wiki_id,
+        )
+
+        try:
+            return data["query"]["categorymembers"]
+        except KeyError:
+            return []
 
     async def get_all_pages(
         self,
@@ -331,7 +494,7 @@ class MediaWikiClient:
             "format": "json",
         }
 
-        data = await self._request(params, scopes=["page_read"], api_url=api_url)
+        data = await self.request(params, scopes=["page_read"], api_url=api_url)
 
         try:
             pages = data["query"]["allpages"]
@@ -383,7 +546,7 @@ class MediaWikiClient:
             params["username"] = user.username
 
         # scope "search" is required by the endpoint configuration
-        data = await self._request(
+        data = await self.request(
             params,
             scopes=["search"],
             api_url=user.api_url if user else None,
@@ -438,7 +601,7 @@ class MediaWikiClient:
         if user_id:
             params["user_id"] = user_id
 
-        data = await self._request(params, scopes=["check_access"], api_url=api_url, wiki_id=wiki_id)
+        data = await self.request(params, scopes=["check_access"], api_url=api_url, wiki_id=wiki_id)
 
         # The result is nested under 'mwassistant-check-access' key
         result = data.get("mwassistant-check-access", {})

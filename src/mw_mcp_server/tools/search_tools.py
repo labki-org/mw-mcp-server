@@ -154,8 +154,9 @@ async def tool_vector_search(
         access_map = await validate_page_access(titles_to_check, user, client)
     except Exception as exc:
         logger.error("Permission validation failed: %s", exc)
-        # Safe default: deny all if permission check fails
-        return []
+        raise ValueError(
+            f"Permission validation failed during vector search: {type(exc).__name__}: {exc}"
+        ) from exc
 
     # -------------------------------------------------------------
     # Filter to accessible pages and convert to API result objects
@@ -177,7 +178,6 @@ async def tool_vector_search(
                 title=title,
                 section_id=section_id,
                 score=float(score),
-                text="",  # Text not stored in new schema
             )
         )
 

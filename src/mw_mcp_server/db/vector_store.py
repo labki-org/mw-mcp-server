@@ -20,8 +20,7 @@ class VectorStore:
     """
     PostgreSQL-backed vector store using pgvector for similarity search.
     
-    This class provides the same interface as the old FaissIndex but
-    uses the database for persistence.
+    Provides vector storage and similarity search backed by PostgreSQL + pgvector.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -173,6 +172,26 @@ class VectorStore:
 
         result = await self._session.execute(stmt)
         return sorted([row[0] for row in result.all()])
+
+    async def get_embedding_last_modified(
+        self,
+        wiki_id: str,
+        page_title: Optional[str] = None,
+    ) -> Optional[datetime]:
+        """
+        Return the most recent last_modified timestamp for embeddings.
+
+        If page_title is given, scopes to that page. Otherwise returns the
+        latest timestamp across all embeddings for the wiki.
+        """
+        stmt = (
+            select(func.max(Embedding.last_modified))
+            .where(Embedding.wiki_id == wiki_id)
+        )
+        if page_title is not None:
+            stmt = stmt.where(Embedding.page_title == page_title)
+        result = await self._session.execute(stmt)
+        return result.scalar()
 
     async def get_stats(self, wiki_id: str) -> dict:
         """

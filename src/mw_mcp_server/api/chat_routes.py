@@ -47,6 +47,7 @@ from ..embeddings.embedder import Embedder
 from ..tools.definitions import TOOL_DEFINITIONS
 from ..tools.base import dispatch_tool_call
 from .dependencies import get_llm_client, get_embedder, get_db_session, get_vector_store, get_rate_limiter
+from ..config import settings
 from ..prompts import CHAT_SYSTEM_PROMPT, EDITOR_SYSTEM_PROMPT
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -88,7 +89,7 @@ async def _get_schema_context(
 
     Only includes categories/properties the user has namespace access to.
     """
-    SCHEMA_CAP = 100
+    SCHEMA_CAP = settings.schema_cap
 
     # NS_CATEGORY = 14, NS_PROPERTY = 102
     fetch_cats = allowed_namespaces is None or 14 in (allowed_namespaces or [])
@@ -96,12 +97,15 @@ async def _get_schema_context(
 
     cats_coro = vector_store.get_pages_by_namespace(wiki_id, 14) if fetch_cats else asyncio.sleep(0)
     props_coro = vector_store.get_pages_by_namespace(wiki_id, 102) if fetch_props else asyncio.sleep(0)
+    ts_coro = vector_store.get_embedding_last_modified(wiki_id)
 
-    cats_result, props_result = await asyncio.gather(cats_coro, props_coro)
+    cats_result, props_result, latest_ts = await asyncio.gather(cats_coro, props_coro, ts_coro)
     cats = cats_result if fetch_cats else []
     props = props_result if fetch_props else []
 
     schema_context = "\n\n[KNOWN SCHEMA ELEMENTS (Truncated if > 100)]\n"
+    if latest_ts:
+        schema_context += f"Index last updated: {latest_ts.strftime('%Y-%m-%d %H:%M UTC')}\n"
     schema_context += f"Categories (~{len(cats)}): " + ", ".join(cats[:SCHEMA_CAP])
     if len(cats) > SCHEMA_CAP:
         schema_context += "..."
@@ -219,7 +223,7 @@ async def chat(
     # -------------------------------------------------------------
     # 3. LLM + Tool Loop
     # -------------------------------------------------------------
-    MAX_LOOPS = 10
+    MAX_LOOPS = settings.max_tool_loops
     loop_count = 0
     loop_messages = list(full_context)
     used_tools_log: List[Dict[str, str]] = []

@@ -123,19 +123,6 @@ def get_tenant_data_path(wiki_id: str) -> Path:
     return get_tenant_data_root() / tenant.wiki_id
 
 
-def get_tenant_index_path(wiki_id: str) -> str:
-    """
-    Get the FAISS index file path for a tenant.
-    """
-    return str(get_tenant_data_path(wiki_id) / "faiss_index.bin")
-
-
-def get_tenant_meta_path(wiki_id: str) -> str:
-    """
-    Get the FAISS metadata file path for a tenant.
-    """
-    return str(get_tenant_data_path(wiki_id) / "index_meta.json")
-
 
 def ensure_tenant_directory(wiki_id: str) -> Path:
     """

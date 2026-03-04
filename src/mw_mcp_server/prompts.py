@@ -11,7 +11,7 @@ CHAT_SYSTEM_PROMPT = (
     "SOURCE OF TRUTH\n"
     "1. Tool calls: vector search, keyword search (`mw_search_pages`), SMW queries, page fetch tools, embeddings.\n"
     "2. Content explicitly provided in this conversation.\n"
-    "If schema metadata (e.g., index_meta.json) is available, it is authoritative.\n\n"
+    "The [KNOWN SCHEMA ELEMENTS] section lists categories and properties from the wiki's index.\n\n"
     "CORE PRINCIPLES\n"
     "• Never assume knowledge of the wiki. Always discover structure using tools.\n"
     "• Never guess or fabricate category names, property names, template names, or page titles.\n"

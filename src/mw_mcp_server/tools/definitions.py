@@ -21,9 +21,11 @@ from typing import Dict, List, Any, Final
 # ---------------------------------------------------------------------
 
 TOOL_MW_GET_PAGE: Final[str] = "mw_get_page"
+TOOL_MW_PAGE_INFO: Final[str] = "mw_page_info"
 TOOL_MW_RUN_SMW_ASK: Final[str] = "mw_run_smw_ask"
 TOOL_MW_VECTOR_SEARCH: Final[str] = "mw_vector_search"
 TOOL_MW_SEARCH_PAGES: Final[str] = "mw_search_pages"
+TOOL_MW_GET_CATEGORY_MEMBERS: Final[str] = "mw_get_category_members"
 
 
 # ---------------------------------------------------------------------
@@ -59,10 +61,68 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": TOOL_MW_PAGE_INFO,
+            "description": (
+                "Returns lightweight metadata about a wiki page: existence, namespace, size, and last modified date. "
+                "Use this to check if a page exists without fetching its full content."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "Exact title of the page to check. "
+                            "Include namespace prefixes if applicable (e.g., 'Category:Physics')."
+                        ),
+                        "minLength": 1,
+                    }
+                },
+                "required": ["title"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": TOOL_MW_GET_CATEGORY_MEMBERS,
+            "description": (
+                "Lists all pages belonging to a given MediaWiki category. "
+                "Use this to discover pages in a category without writing an SMW query."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": (
+                            "Category name, with or without 'Category:' prefix "
+                            "(e.g., 'Physics' or 'Category:Physics')."
+                        ),
+                        "minLength": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of members to return.",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 50,
+                    },
+                },
+                "required": ["category"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": TOOL_MW_RUN_SMW_ASK,
             "description": (
                 "Executes a raw Semantic MediaWiki #ask query and returns the structured results. "
-                "Use this for property-based queries and structured data retrieval."
+                "Use this for property-based queries and structured data retrieval. "
+                "Note: |format= parameters are automatically stripped (the API returns structured JSON natively)."
             ),
             "parameters": {
                 "type": "object",

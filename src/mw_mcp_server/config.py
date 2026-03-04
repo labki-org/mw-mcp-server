@@ -19,7 +19,7 @@ Design Principles
 from __future__ import annotations
 
 from typing import List, Dict, Optional
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -126,6 +126,69 @@ class Settings(BaseSettings):
         default="/app/data",
         min_length=1,
         description="Root directory for tenant-scoped data.",
+    )
+
+    # ------------------------------------------------------------------
+    # LLM Chat Loop Configuration
+    # ------------------------------------------------------------------
+
+    max_tool_loops: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of tool call iterations in the LLM chat loop.",
+    )
+
+    schema_cap: int = Field(
+        default=100,
+        ge=10,
+        le=1000,
+        description="Maximum number of schema elements (categories/properties) to include in system prompt.",
+    )
+
+    # ------------------------------------------------------------------
+    # Embedding Configuration
+    # ------------------------------------------------------------------
+
+    chunk_size: int = Field(
+        default=12000,
+        ge=500,
+        le=100000,
+        description="Text chunk size for embedding splits.",
+    )
+
+    chunk_overlap: int = Field(
+        default=1200,
+        ge=0,
+        le=10000,
+        description="Overlap between text chunks for embedding.",
+    )
+
+    # ------------------------------------------------------------------
+    # Database Pool Configuration
+    # ------------------------------------------------------------------
+
+    db_pool_size: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="SQLAlchemy connection pool size.",
+    )
+
+    db_max_overflow: int = Field(
+        default=10,
+        ge=0,
+        le=100,
+        description="SQLAlchemy maximum connection pool overflow.",
+    )
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+
+    log_level: str = Field(
+        default="INFO",
+        description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     )
 
 
@@ -243,7 +306,7 @@ class Settings(BaseSettings):
         return self
 
 
-class WikiCredentials(BaseSettings):
+class WikiCredentials(BaseModel):
     """Credentials for a specific MediaWiki instance."""
     mw_to_mcp_secret: SecretStr
     mcp_to_mw_secret: SecretStr

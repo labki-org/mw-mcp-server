@@ -7,17 +7,16 @@ from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
 
+from ..config import settings
 from ..db import VectorStore, AsyncSessionLocal
 from .embedder import Embedder
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 
-# Re-use the same splitter configuration
-# (Ideally this would be injected or shared config, but duplicating for simplicity here)
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=12000,
-    chunk_overlap=1200,
+    chunk_size=settings.chunk_size,
+    chunk_overlap=settings.chunk_overlap,
     length_function=len,
     separators=["\n\n", "\n", ".", " ", ""],
 )

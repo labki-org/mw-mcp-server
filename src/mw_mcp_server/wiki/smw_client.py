@@ -116,7 +116,7 @@ class SMWClient:
 
         try:
             # We use 'smw_query' scope which matches the PHP requires_scopes check
-            data = await self._mw._request(
+            data = await self._mw.request(
                 request_params,
                 scopes=["smw_query"],
                 api_url=user.api_url if user else None,

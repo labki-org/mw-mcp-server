@@ -14,17 +14,23 @@ Responsibilities
 
 from __future__ import annotations
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 import asyncio
 import re
 
-from ..wiki.api_client import MediaWikiClient
+import logging
+
+from ..wiki.api_client import MediaWikiClient, PageContent
 from ..wiki.smw_client import SMWClient
 from ..auth.models import UserContext
 from ..db import VectorStore
+from ..embeddings.queue import embedding_queue, EmbeddingJob
 from .schema_tools import NS_CATEGORY, NS_PROPERTY
 
+logger = logging.getLogger("mcp.wiki_tools")
+
 _SPECIAL_PRINTOUTS = frozenset({"category", "mainlabel"})
+_REDIRECT_RE = re.compile(r"#REDIRECT\s*\[\[(.+?)\]\]", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------
@@ -85,7 +91,8 @@ async def tool_get_page(
     title: str,
     user: UserContext,
     client: Optional[MediaWikiClient] = None,
-) -> Optional[str]:
+    vector_store: Optional[VectorStore] = None,
+) -> Union[str, Dict[str, Any]]:
     """
     Fetch raw wikitext for a MediaWiki page.
 
@@ -100,10 +107,13 @@ async def tool_get_page(
     client : MediaWikiClient
         Optional testing override.
 
+    vector_store : VectorStore
+        Optional vector store for staleness detection.
+
     Returns
     -------
-    Optional[str]
-        The wikitext of the page, or None if not found.
+    Union[str, Dict[str, Any]]
+        The wikitext of the page, or a structured status dict if not found/empty.
     """
     if not title:
         raise ValueError("mw_get_page requires a non-empty 'title' argument.")
@@ -114,14 +124,239 @@ async def tool_get_page(
     await _assert_user_can_read(user, title, client)
 
     try:
-        text = await client.get_page_wikitext(title, api_url=user.api_url, wiki_id=user.wiki_id, user=user)
+        page = await client.get_page_wikitext(title, api_url=user.api_url, wiki_id=user.wiki_id, user=user)
     except Exception as exc:
         # Normalize all exceptions for LLM tool loop
         raise ValueError(
-            f"Failed to fetch wiki page '{title}': {type(exc).__name__}"
+            f"Failed to fetch wiki page '{title}': {type(exc).__name__}: {exc}"
         ) from exc
 
-    return text
+    if page.wikitext is None:
+        return {"status": "not_found", "title": title}
+
+    if not page.wikitext.strip():
+        return {"status": "empty", "title": title, "content": ""}
+
+    # Handle redirects: if the content is a redirect, follow it
+    redirect_match = _REDIRECT_RE.match(page.wikitext)
+    if redirect_match:
+        target_title = redirect_match.group(1).strip()
+        try:
+            await _assert_user_can_read(user, target_title, client)
+        except PermissionError:
+            # User can read source but not target — return redirect wikitext as-is
+            return {
+                "status": "redirect",
+                "title": title,
+                "redirect_target": target_title,
+                "content": page.wikitext,
+                "note": "You do not have access to the redirect target page.",
+            }
+
+        try:
+            target_page = await client.get_page_wikitext(
+                target_title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
+            )
+        except Exception:
+            # Can't fetch target — return the redirect source
+            return {
+                "status": "redirect",
+                "title": title,
+                "redirect_target": target_title,
+                "content": page.wikitext,
+                "note": "Failed to fetch redirect target.",
+            }
+
+        if target_page.wikitext is None:
+            return {
+                "status": "redirect",
+                "title": title,
+                "redirect_target": target_title,
+                "content": page.wikitext,
+                "note": "Redirect target page does not exist.",
+            }
+
+        # Staleness detection on the target page instead
+        if vector_store is not None and target_page.wikitext:
+            try:
+                await _check_embedding_staleness(
+                    target_title, target_page, user, vector_store
+                )
+            except Exception:
+                logger.debug("Staleness check failed for '%s'", target_title, exc_info=True)
+
+        return {
+            "status": "redirect_followed",
+            "original_title": title,
+            "redirect_target": target_title,
+            "content": target_page.wikitext,
+        }
+
+    # Staleness detection: compare live revision vs embedding timestamp
+    if vector_store is not None and page.wikitext:
+        try:
+            await _check_embedding_staleness(
+                title, page, user, vector_store
+            )
+        except Exception:
+            # Staleness check is best-effort; don't fail the page fetch
+            logger.debug("Staleness check failed for '%s'", title, exc_info=True)
+
+    return page.wikitext
+
+
+async def _check_embedding_staleness(
+    title: str,
+    page: PageContent,
+    user: UserContext,
+    vector_store: VectorStore,
+) -> None:
+    """
+    Compare page revision timestamp (from PageContent) against embedding timestamp.
+    If stale or missing, enqueue a re-embedding job.
+
+    The revision timestamp comes from the mwassistant-page response, so no
+    extra API call is needed — this works on private wikis too.
+    """
+    from datetime import datetime
+
+    rev_ts_str = page.timestamp
+    if rev_ts_str is None:
+        return  # no timestamp available (older MW extension version)
+
+    emb_ts = await vector_store.get_embedding_last_modified(user.wiki_id, title)
+
+    # Parse MW timestamp: either ISO "2024-01-15T12:30:00Z" or MW format "20240115123000"
+    if "T" in rev_ts_str:
+        rev_ts = datetime.fromisoformat(rev_ts_str.replace("Z", "+00:00"))
+    else:
+        rev_ts = datetime.strptime(rev_ts_str, "%Y%m%d%H%M%S")
+
+    ns = _parse_namespace_from_title(title)
+
+    is_stale = emb_ts is None or (
+        emb_ts.tzinfo is None and rev_ts.replace(tzinfo=None) > emb_ts
+    ) or (
+        emb_ts.tzinfo is not None and rev_ts > emb_ts
+    )
+
+    if is_stale:
+        logger.info("Stale embedding detected for '%s', enqueuing refresh", title)
+        await embedding_queue.enqueue(EmbeddingJob(
+            wiki_id=user.wiki_id,
+            title=title,
+            content=page.wikitext,
+            namespace=ns,
+            last_modified=rev_ts.replace(tzinfo=None),
+            request_id=f"staleness-{user.wiki_id}-{title}",
+        ))
+
+
+def _parse_namespace_from_title(title: str) -> int:
+    """Derive a namespace ID from a title prefix."""
+    if ":" in title:
+        prefix = title.split(":", 1)[0]
+        ns_map = {"Category": 14, "Property": 102, "Template": 10, "Help": 12,
+                   "User": 2, "File": 6, "MediaWiki": 8, "Talk": 1, "Project": 4}
+        return ns_map.get(prefix, 0)
+    return 0
+
+
+async def tool_page_info(
+    title: str,
+    user: UserContext,
+    client: Optional[MediaWikiClient] = None,
+) -> Dict[str, Any]:
+    """
+    Return lightweight metadata about a page without fetching full content.
+
+    Access control: checks allowed_namespaces from JWT, then check_read_access().
+    If the user can't access the page, returns a permission error —
+    does NOT reveal whether the page exists.
+    """
+    if not title:
+        raise ValueError("mw_page_info requires a non-empty 'title' argument.")
+
+    client = client or mw_client
+
+    # Namespace-level check from JWT
+    ns = _parse_namespace_from_title(title)
+    if user.allowed_namespaces and ns not in user.allowed_namespaces:
+        raise PermissionError(
+            f"User '{user.username}' does not have access to namespace {ns}"
+        )
+
+    # Page-level permission check
+    await _assert_user_can_read(user, title, client)
+
+    try:
+        info = await client.get_page_info(
+            title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to fetch page info for '{title}': {type(exc).__name__}: {exc}"
+        ) from exc
+
+    if info is None:
+        return {"status": "not_found", "title": title}
+
+    return {
+        "status": "exists",
+        "title": info["title"],
+        "namespace": info["namespace"],
+        "length": info["length"],
+        "last_modified": info["last_modified"],
+    }
+
+
+async def tool_get_category_members(
+    category: str,
+    user: UserContext,
+    limit: int = 50,
+    client: Optional[MediaWikiClient] = None,
+) -> Dict[str, Any]:
+    """
+    List pages in a given category.
+
+    Access control: requires NS_CATEGORY (14) in allowed_namespaces.
+    Filters returned pages through check_read_access().
+    """
+    if not category:
+        raise ValueError("mw_get_category_members requires a non-empty 'category' argument.")
+
+    client = client or mw_client
+
+    # Check that user can access the Category namespace
+    if user.allowed_namespaces and NS_CATEGORY not in user.allowed_namespaces:
+        raise PermissionError(
+            f"User '{user.username}' does not have access to the Category namespace"
+        )
+
+    try:
+        members = await client.get_category_members(
+            category, limit=limit,
+            api_url=user.api_url, wiki_id=user.wiki_id, user=user,
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to fetch category members for '{category}': {type(exc).__name__}: {exc}"
+        ) from exc
+
+    if not members:
+        return {"category": category, "members": [], "count": 0}
+
+    # Filter through page-level access check
+    titles = [m.get("title", "") for m in members if m.get("title")]
+    if titles:
+        access_map = await client.check_read_access(titles, user)
+        members = [m for m in members if access_map.get(m.get("title", ""), False)]
+
+    return {
+        "category": category,
+        "members": [{"title": m["title"], "ns": m.get("ns", 0)} for m in members],
+        "count": len(members),
+    }
 
 
 def _find_best_match(

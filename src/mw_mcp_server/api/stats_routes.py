@@ -19,6 +19,7 @@ Metrics Tracked
 - Embeddings Count (Snapshot)
 """
 
+import hmac
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
@@ -58,7 +59,7 @@ async def verify_admin(
 
     provided_key = x_admin_key or key
     
-    if not provided_key or provided_key != expected_key:
+    if not provided_key or not hmac.compare_digest(provided_key, expected_key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing admin API key"

@@ -46,7 +46,7 @@ def _configure_logging() -> None:
     """
     Configure structured logging for production.
     """
-    log_level = getattr(settings, "log_level", "INFO").upper()
+    log_level = settings.log_level.upper()
     
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
@@ -147,7 +147,7 @@ def create_app() -> FastAPI:
     """
     app = FastAPI(
         title="mw-mcp-server",
-        version="1.0.0",
+        version="0.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",

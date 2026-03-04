@@ -28,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
+from ..config import settings
 
 
 class Base(DeclarativeBase):
@@ -54,8 +55,8 @@ class Embedding(Base):
     namespace: Mapped[int] = mapped_column(Integer, nullable=False)
     last_modified: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     
-    # pgvector column - 3072 dimensions for text-embedding-3-large
-    embedding = Column(Vector(3072), nullable=False)
+    # pgvector column - dimensions configured via settings.embedding_dimensions
+    embedding = Column(Vector(settings.embedding_dimensions), nullable=False)
 
     __table_args__ = (
         Index("idx_embedding_wiki_page", "wiki_id", "page_title"),
