@@ -345,12 +345,52 @@ class MediaWikiClient:
         """
         Fetch lightweight metadata about a page (existence, size, last modified, namespace).
 
+        When a user context is provided, uses the permission-aware
+        mwassistant-page-info endpoint which works on private wikis.
+
         Returns None if the page does not exist.
         """
         if not title:
             raise ValueError("Page title must be non-empty.")
 
-        params: Dict[str, Any] = {
+        # Permission-aware path: use mwassistant-page-info endpoint
+        if user is not None:
+            params: Dict[str, Any] = {
+                "action": "mwassistant-page-info",
+                "title": title,
+                "format": "json",
+                "formatversion": 2,
+            }
+            if user.username:
+                params["username"] = user.username
+            if user.user_id:
+                params["user_id"] = user.user_id
+
+            data = await self.request(
+                params,
+                scopes=["page_read"],
+                api_url=user.api_url or api_url,
+                wiki_id=user.wiki_id or wiki_id,
+            )
+
+            result = data.get("mwassistant-page-info", {})
+            if result.get("error") == "permission-denied":
+                raise PermissionError(
+                    f"User '{user.username}' does not have read access to page: {title}"
+                )
+            if not result.get("exists", False):
+                return None
+
+            return {
+                "title": result.get("title", title),
+                "pageid": result.get("pageid"),
+                "namespace": result.get("ns", 0),
+                "length": result.get("length", 0),
+                "last_modified": result.get("timestamp"),
+            }
+
+        # Legacy path: standard action=query (no user permission checks)
+        params = {
             "action": "query",
             "prop": "info",
             "titles": title,
@@ -361,8 +401,8 @@ class MediaWikiClient:
         data = await self.request(
             params,
             scopes=["page_read"],
-            api_url=user.api_url if user else api_url,
-            wiki_id=user.wiki_id if user else wiki_id,
+            api_url=api_url,
+            wiki_id=wiki_id,
         )
         page = self._extract_first_page(data)
         if page is None:
@@ -426,6 +466,10 @@ class MediaWikiClient:
         """
         List pages in a given category.
 
+        When a user context is provided, uses the permission-aware
+        mwassistant-category-members endpoint which works on private wikis
+        and filters results by the user's read permissions.
+
         Parameters
         ----------
         category : str
@@ -438,10 +482,35 @@ class MediaWikiClient:
         List[Dict[str, Any]]
             List of dicts with keys: title, ns, pageid.
         """
+        # Permission-aware path: use mwassistant-category-members endpoint
+        if user is not None:
+            params: Dict[str, Any] = {
+                "action": "mwassistant-category-members",
+                "category": category,
+                "limit": min(limit, 500),
+                "format": "json",
+                "formatversion": 2,
+            }
+            if user.username:
+                params["username"] = user.username
+            if user.user_id:
+                params["user_id"] = user.user_id
+
+            data = await self.request(
+                params,
+                scopes=["page_read"],
+                api_url=user.api_url or api_url,
+                wiki_id=user.wiki_id or wiki_id,
+            )
+
+            result = data.get("mwassistant-category-members", {})
+            return result.get("members", [])
+
+        # Legacy path: standard action=query
         if not category.startswith("Category:"):
             category = f"Category:{category}"
 
-        params: Dict[str, Any] = {
+        params = {
             "action": "query",
             "list": "categorymembers",
             "cmtitle": category,
@@ -453,8 +522,8 @@ class MediaWikiClient:
         data = await self.request(
             params,
             scopes=["page_read"],
-            api_url=user.api_url if user else api_url,
-            wiki_id=user.wiki_id if user else wiki_id,
+            api_url=api_url,
+            wiki_id=wiki_id,
         )
 
         try:
