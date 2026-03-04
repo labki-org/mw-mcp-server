@@ -48,10 +48,11 @@ class VectorStore:
         namespaces: List[int],
         embeddings: List[List[float]],
         last_modified: Optional[datetime] = None,
+        embedding_model: Optional[str] = None,
     ) -> int:
         """
         Add document embeddings to the store.
-        
+
         Parameters
         ----------
         wiki_id : str
@@ -66,7 +67,9 @@ class VectorStore:
             Vector embeddings matching the page_titles.
         last_modified : Optional[datetime]
             Timestamp for the embeddings.
-            
+        embedding_model : Optional[str]
+            Name of the model used to generate these embeddings.
+
         Returns
         -------
         int
@@ -85,6 +88,7 @@ class VectorStore:
                 namespace=ns,
                 last_modified=last_modified,
                 embedding=emb,
+                embedding_model=embedding_model,
             )
             self._session.add(embedding_record)
 

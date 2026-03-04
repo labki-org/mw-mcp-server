@@ -40,6 +40,10 @@ COPY --from=builder /install /usr/local
 # Copy application code
 COPY src/ ./src
 
+# Copy Alembic migration files
+COPY alembic.ini ./
+COPY migrations/ ./migrations
+
 ENV PYTHONPATH="/app/src"
 
 # Data directory mounted as external volume in docker-compose

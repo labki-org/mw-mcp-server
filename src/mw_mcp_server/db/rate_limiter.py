@@ -52,45 +52,52 @@ class RateLimiter:
         self,
         wiki_id: str,
         user_id: int,
+        *,
+        _for_update: bool = False,
     ) -> UsageStatus:
         """
         Check if a user is within their daily token limit.
-        
+
         Parameters
         ----------
         wiki_id : str
             Tenant wiki identifier.
         user_id : int
             MediaWiki user ID.
-            
+        _for_update : bool
+            If True, acquires a row lock (FOR UPDATE). Only used
+            internally by record_usage to prevent race conditions.
+
         Returns
         -------
         UsageStatus
             Current usage status including remaining tokens.
         """
         today = date.today()
-        
-        result = await self._session.execute(
-            select(TokenUsage).where(
-                TokenUsage.wiki_id == wiki_id,
-                TokenUsage.user_id == user_id,
-                TokenUsage.usage_date == today,
-            )
+
+        stmt = select(TokenUsage).where(
+            TokenUsage.wiki_id == wiki_id,
+            TokenUsage.user_id == user_id,
+            TokenUsage.usage_date == today,
         )
+        if _for_update:
+            stmt = stmt.with_for_update()
+
+        result = await self._session.execute(stmt)
         usage = result.scalar_one_or_none()
-        
+
         tokens_used = usage.total_tokens if usage else 0
         requests_today = usage.request_count if usage else 0
         tokens_remaining = max(0, self._daily_limit - tokens_used)
         is_limited = tokens_used >= self._daily_limit
-        
+
         # Reset time is midnight UTC of the next day
         tomorrow = datetime.combine(
             today + timedelta(days=1),
             datetime.min.time(),
             tzinfo=timezone.utc,
         )
-        
+
         return UsageStatus(
             tokens_used=tokens_used,
             tokens_remaining=tokens_remaining,
@@ -153,7 +160,7 @@ class RateLimiter:
         await self._session.execute(stmt)
         await self._session.flush()
         
-        return await self.check_limit(wiki_id, user_id)
+        return await self.check_limit(wiki_id, user_id, _for_update=True)
 
     async def get_usage_history(
         self,

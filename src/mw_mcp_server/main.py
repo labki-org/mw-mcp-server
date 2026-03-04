@@ -26,6 +26,7 @@ from sqlalchemy import text
 
 from .config import settings
 from .core.errors import unhandled_exception_handler
+from .core.middleware import RequestIDMiddleware, RequestIDLogFilter
 from .db import async_engine, Base
 
 from .api import (
@@ -45,15 +46,23 @@ from .api import (
 def _configure_logging() -> None:
     """
     Configure structured logging for production.
+    Includes request_id in log output for distributed tracing.
     """
     log_level = settings.log_level.upper()
-    
+
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        format="%(asctime)s | %(levelname)s | %(name)s | req=%(request_id)s | %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
         stream=sys.stdout,
     )
+
+    # Add the request ID filter to every handler on the root logger so that
+    # all log records (including from third-party libraries like uvicorn)
+    # have the request_id attribute populated before formatting.
+    request_id_filter = RequestIDLogFilter()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(request_id_filter)
 
 
 _configure_logging()
@@ -97,9 +106,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async with async_engine.begin() as conn:
             # Enable pgvector extension
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            # Create all tables
+            # Create any missing tables (idempotent)
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database initialized successfully")
+        logger.info("Database tables initialized")
+
+        # Run Alembic migrations for schema changes (e.g. new columns)
+        import asyncio
+        from alembic.config import Config as AlembicConfig
+        from alembic import command as alembic_command
+
+        alembic_cfg = AlembicConfig("alembic.ini")
+        await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
+        logger.info("Database migrations completed")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise
@@ -153,6 +171,12 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+
+    # --------------------------------------------------------------
+    # Middleware (order matters: first added = outermost)
+    # --------------------------------------------------------------
+
+    app.add_middleware(RequestIDMiddleware)
 
     # --------------------------------------------------------------
     # Global Exception Handling

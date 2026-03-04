@@ -119,6 +119,17 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Session Retention
+    # ------------------------------------------------------------------
+
+    session_retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        description="Number of days to retain chat sessions before archival/deletion.",
+    )
+
+    # ------------------------------------------------------------------
     # Multi-Tenant Data Storage
     # ------------------------------------------------------------------
 
@@ -189,6 +200,13 @@ class Settings(BaseSettings):
     log_level: str = Field(
         default="INFO",
         description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+    )
+
+    embedding_queue_max_size: int = Field(
+        default=1000,
+        ge=10,
+        le=100_000,
+        description="Maximum number of pending embedding jobs in the queue.",
     )
 
 

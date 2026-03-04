@@ -24,6 +24,9 @@ from ..auth.models import UserContext
 from ..embeddings.embedder import Embedder
 from ..db import VectorStore
 
+# Maximum allowed length for string arguments passed to tools
+MAX_TOOL_STRING_ARG_LENGTH = 10_000
+
 
 # ---------------------------------------------------------------------
 # Tool Type Definitions
@@ -274,5 +277,18 @@ async def dispatch_tool_call(
     handler = TOOL_REGISTRY.get(tool_name)
     if not handler:
         raise ValueError(f"Unknown tool requested: {tool_name}")
+
+    # Validate string argument lengths to prevent abuse
+    for key, value in args.items():
+        if isinstance(value, str) and len(value) > MAX_TOOL_STRING_ARG_LENGTH:
+            raise ValueError(
+                f"Argument '{key}' exceeds maximum length of {MAX_TOOL_STRING_ARG_LENGTH} characters."
+            )
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                if isinstance(item, str) and len(item) > MAX_TOOL_STRING_ARG_LENGTH:
+                    raise ValueError(
+                        f"Argument '{key}[{i}]' exceeds maximum length of {MAX_TOOL_STRING_ARG_LENGTH} characters."
+                    )
 
     return await handler(args, user, vector_store, embedder)
