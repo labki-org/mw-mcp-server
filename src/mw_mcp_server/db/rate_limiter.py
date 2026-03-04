@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -55,42 +55,47 @@ class RateLimiter:
     ) -> UsageStatus:
         """
         Check if a user is within their daily token limit.
-        
+
+        Uses SELECT ... FOR UPDATE to prevent race conditions when
+        called within the same transaction as record_usage.
+
         Parameters
         ----------
         wiki_id : str
             Tenant wiki identifier.
         user_id : int
             MediaWiki user ID.
-            
+
         Returns
         -------
         UsageStatus
             Current usage status including remaining tokens.
         """
         today = date.today()
-        
+
         result = await self._session.execute(
-            select(TokenUsage).where(
+            select(TokenUsage)
+            .where(
                 TokenUsage.wiki_id == wiki_id,
                 TokenUsage.user_id == user_id,
                 TokenUsage.usage_date == today,
             )
+            .with_for_update()
         )
         usage = result.scalar_one_or_none()
-        
+
         tokens_used = usage.total_tokens if usage else 0
         requests_today = usage.request_count if usage else 0
         tokens_remaining = max(0, self._daily_limit - tokens_used)
         is_limited = tokens_used >= self._daily_limit
-        
+
         # Reset time is midnight UTC of the next day
         tomorrow = datetime.combine(
             today + timedelta(days=1),
             datetime.min.time(),
             tzinfo=timezone.utc,
         )
-        
+
         return UsageStatus(
             tokens_used=tokens_used,
             tokens_remaining=tokens_remaining,

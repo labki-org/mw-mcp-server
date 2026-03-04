@@ -54,7 +54,11 @@ class Embedding(Base):
     section_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     namespace: Mapped[int] = mapped_column(Integer, nullable=False)
     last_modified: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    
+    embedding_model: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True,
+        comment="Model used to generate this embedding (e.g. text-embedding-3-large)",
+    )
+
     # pgvector column - dimensions configured via settings.embedding_dimensions
     embedding = Column(Vector(settings.embedding_dimensions), nullable=False)
 

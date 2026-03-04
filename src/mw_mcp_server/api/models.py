@@ -59,7 +59,7 @@ class ChatMessage(BaseModel):
     Single message in a chat conversation.
     """
     role: Literal["system", "user", "assistant", "tool"]
-    content: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1, max_length=100_000)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -68,8 +68,8 @@ class ChatRequest(BaseModel):
     """
     Chat completion request payload.
     """
-    messages: List[ChatMessage] = Field(..., min_length=1)
-    session_id: Optional[str] = None
+    messages: List[ChatMessage] = Field(..., min_length=1, max_length=100)
+    session_id: Optional[str] = Field(default=None, max_length=64)
     max_tokens: Optional[int] = Field(default=512, ge=1, le=32768)
     tools_mode: Literal["auto", "none", "forced"] = "auto"
     context: Literal["chat", "editor"] = "chat"
@@ -96,7 +96,7 @@ class SearchRequest(BaseModel):
     """
     Vector or text-based search request.
     """
-    query: str = Field(..., min_length=1)
+    query: str = Field(..., min_length=1, max_length=10_000)
     k: int = Field(default=5, ge=1, le=100)
 
     model_config = ConfigDict(extra="forbid")
@@ -121,7 +121,7 @@ class SMWQueryRequest(BaseModel):
     """
     Raw SMW ask query wrapper.
     """
-    ask: str = Field(..., min_length=1)
+    ask: str = Field(..., min_length=1, max_length=10_000)
 
     model_config = ConfigDict(extra="forbid")
 

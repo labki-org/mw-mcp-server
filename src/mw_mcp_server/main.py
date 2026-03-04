@@ -26,6 +26,7 @@ from sqlalchemy import text
 
 from .config import settings
 from .core.errors import unhandled_exception_handler
+from .core.middleware import RequestIDMiddleware, RequestIDLogFilter
 from .db import async_engine, Base
 
 from .api import (
@@ -45,15 +46,20 @@ from .api import (
 def _configure_logging() -> None:
     """
     Configure structured logging for production.
+    Includes request_id in log output for distributed tracing.
     """
     log_level = settings.log_level.upper()
-    
+
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        format="%(asctime)s | %(levelname)s | %(name)s | req=%(request_id)s | %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
         stream=sys.stdout,
     )
+
+    # Add the request ID filter to the root logger
+    root_logger = logging.getLogger()
+    root_logger.addFilter(RequestIDLogFilter())
 
 
 _configure_logging()
@@ -153,6 +159,12 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+
+    # --------------------------------------------------------------
+    # Middleware (order matters: first added = outermost)
+    # --------------------------------------------------------------
+
+    app.add_middleware(RequestIDMiddleware)
 
     # --------------------------------------------------------------
     # Global Exception Handling
