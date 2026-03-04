@@ -2,7 +2,7 @@
 Embedding Data Models
 
 This module defines the canonical data model used to represent a single
-indexed document chunk stored in the FAISS vector index.
+indexed document chunk stored in the PostgreSQL + pgvector index.
 
 Each instance corresponds to ONE embedding vector and ONE chunk of text.
 """
@@ -18,8 +18,7 @@ class IndexedDocument(BaseModel):
     A single indexed document chunk.
 
     This model is the authoritative schema for:
-    - FAISS index storage
-    - Metadata persistence to JSON
+    - PostgreSQL + pgvector embedding storage
     - Vector search result mapping
     """
 

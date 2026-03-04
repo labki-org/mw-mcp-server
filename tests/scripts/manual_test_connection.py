@@ -16,7 +16,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SERVER_URL = "http://localhost:8000"
-JWT_MW_TO_MCP_SECRET = os.getenv("JWT_MW_TO_MCP_SECRET", "8n7yHEg3UttL-lEOKASg-dS_xkU0gTuqGLn7zvhg4Uh-x52rtA0Zh13WJmGd8ojDjxXJB7qR9U")
+JWT_MW_TO_MCP_SECRET = os.getenv("JWT_MW_TO_MCP_SECRET")
+if not JWT_MW_TO_MCP_SECRET:
+    raise RuntimeError("JWT_MW_TO_MCP_SECRET environment variable is required")
 JWT_ALGO = os.getenv("JWT_ALGO", "HS256")
 
 def create_token(scopes=None):

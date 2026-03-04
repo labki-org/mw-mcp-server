@@ -58,7 +58,6 @@ Each endpoint requires specific scopes:
 | `POST /chat/` | `chat_completion` |
 | `POST /search/` | `search` |
 | `POST /smw-query/` | `smw_query` |
-| `POST /actions/edit-page` | `edit_page` |
 
 **Note:** The extension should include ALL scopes the user might need in a single token, as tokens are short-lived (30s).
 
@@ -156,17 +155,43 @@ Execute a raw Semantic MediaWiki `#ask` query.
 }
 ```
 
-### 4. Edit Page (`POST /actions/edit-page`)
-Apply an edit to a page on behalf of the bot user.
+### 4. Embedding Update (`POST /embeddings/update`)
+Push new or updated page embeddings to the server. Called by the MW extension when pages are created or edited.
 
 **Request:**
 ```json
 {
-  "title": "New_Page_Title",
-  "new_text": "Page content...",
-  "summary": "Created by AI"
+  "title": "Page_Title",
+  "content": "Full wikitext content...",
+  "namespace": 0,
+  "last_modified": "20240115123000"
 }
 ```
+
+### 5. Embedding Delete (`POST /embeddings/delete`)
+Remove embeddings when a page is deleted.
+
+**Request:**
+```json
+{
+  "title": "Page_Title"
+}
+```
+
+### 6. Embedding Stats (`GET /embeddings/stats`)
+Retrieve statistics about the embedding index for a wiki.
+
+### 7. Schema Tools (via Chat Tool Calls)
+The following tools are available to the LLM during chat and are invoked automatically:
+- `mw_get_page` — Fetch raw wikitext for a page
+- `mw_page_info` — Lightweight page metadata check
+- `mw_vector_search` — Semantic vector search
+- `mw_search_pages` — Standard MediaWiki keyword search
+- `mw_run_smw_ask` — Execute SMW #ask queries
+- `mw_get_categories` — List/validate categories from the index
+- `mw_get_properties` — List/validate SMW properties from the index
+- `mw_list_pages` — List pages in a namespace
+- `mw_get_category_members` — List pages in a category
 
 ## Error Handling
 - **401 Unauthorized**: Missing or invalid JWT.

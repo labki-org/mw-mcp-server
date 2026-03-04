@@ -35,9 +35,6 @@ dependencies = [
   "pgvector>=0.3.0,<1.0.0",
   "alembic>=1.13.0,<2.0.0",
 
-  # Numerical
-  "numpy>=1.26.0,<2.0.0",
-
   # Text Chunking
   "tiktoken>=0.7.0,<1.0.0",
   "langchain-text-splitters>=0.2.0,<1.0.0",

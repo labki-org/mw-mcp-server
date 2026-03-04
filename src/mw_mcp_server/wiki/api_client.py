@@ -101,7 +101,7 @@ class MediaWikiClient:
     # ------------------------------------------------------------------
 
 
-    async def _request(
+    async def request(
         self,
         params: Dict[str, Any],
         scopes: Optional[List[str]] = None,
@@ -254,7 +254,7 @@ class MediaWikiClient:
             if user.user_id:
                 params["user_id"] = user.user_id
 
-            data = await self._request(
+            data = await self.request(
                 params,
                 scopes=["page_read"],
                 api_url=user.api_url or api_url,
@@ -280,7 +280,7 @@ class MediaWikiClient:
             "formatversion": 2,
         }
 
-        data = await self._request(params, scopes=["page_read"], api_url=api_url, wiki_id=wiki_id)
+        data = await self.request(params, scopes=["page_read"], api_url=api_url, wiki_id=wiki_id)
 
         try:
             pages = data["query"]["pages"]
@@ -298,6 +298,146 @@ class MediaWikiClient:
             raise MediaWikiResponseError(
                 f"Malformed revision structure for page '{title}'."
             ) from exc
+
+    async def get_page_info(
+        self,
+        title: str,
+        api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
+        user: Optional["UserContext"] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch lightweight metadata about a page (existence, size, last modified, namespace).
+
+        Returns None if the page does not exist.
+        """
+        if not title:
+            raise ValueError("Page title must be non-empty.")
+
+        params: Dict[str, Any] = {
+            "action": "query",
+            "prop": "info",
+            "titles": title,
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        data = await self.request(
+            params,
+            scopes=["page_read"],
+            api_url=user.api_url if user else api_url,
+            wiki_id=user.wiki_id if user else wiki_id,
+        )
+
+        try:
+            pages = data["query"]["pages"]
+        except KeyError as exc:
+            raise MediaWikiResponseError(
+                "Malformed MediaWiki response: missing query.pages."
+            ) from exc
+
+        if not pages or "missing" in pages[0]:
+            return None
+
+        page = pages[0]
+        return {
+            "title": page.get("title", title),
+            "pageid": page.get("pageid"),
+            "namespace": page.get("ns", 0),
+            "length": page.get("length", 0),
+            "last_modified": page.get("touched"),
+        }
+
+    async def get_page_revision_timestamp(
+        self,
+        title: str,
+        api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
+        user: Optional["UserContext"] = None,
+    ) -> Optional[str]:
+        """
+        Fetch the latest revision timestamp for a page.
+
+        Returns an ISO 8601 timestamp string, or None if the page does not exist.
+        """
+        if not title:
+            raise ValueError("Page title must be non-empty.")
+
+        params: Dict[str, Any] = {
+            "action": "query",
+            "prop": "revisions",
+            "rvprop": "timestamp",
+            "titles": title,
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        data = await self.request(
+            params,
+            scopes=["page_read"],
+            api_url=user.api_url if user else api_url,
+            wiki_id=user.wiki_id if user else wiki_id,
+        )
+
+        try:
+            pages = data["query"]["pages"]
+        except KeyError:
+            return None
+
+        if not pages or "missing" in pages[0]:
+            return None
+
+        try:
+            return pages[0]["revisions"][0]["timestamp"]
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    async def get_category_members(
+        self,
+        category: str,
+        limit: int = 50,
+        api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
+        user: Optional["UserContext"] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List pages in a given category.
+
+        Parameters
+        ----------
+        category : str
+            Category name (with or without 'Category:' prefix).
+        limit : int
+            Maximum members to return.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of dicts with keys: title, ns, pageid.
+        """
+        if not category.startswith("Category:"):
+            category = f"Category:{category}"
+
+        params: Dict[str, Any] = {
+            "action": "query",
+            "list": "categorymembers",
+            "cmtitle": category,
+            "cmlimit": min(limit, 500),
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        data = await self.request(
+            params,
+            scopes=["page_read"],
+            api_url=user.api_url if user else api_url,
+            wiki_id=user.wiki_id if user else wiki_id,
+        )
+
+        try:
+            return data["query"]["categorymembers"]
+        except KeyError:
+            return []
 
     async def get_all_pages(
         self,
@@ -331,7 +471,7 @@ class MediaWikiClient:
             "format": "json",
         }
 
-        data = await self._request(params, scopes=["page_read"], api_url=api_url)
+        data = await self.request(params, scopes=["page_read"], api_url=api_url)
 
         try:
             pages = data["query"]["allpages"]
@@ -383,7 +523,7 @@ class MediaWikiClient:
             params["username"] = user.username
 
         # scope "search" is required by the endpoint configuration
-        data = await self._request(
+        data = await self.request(
             params,
             scopes=["search"],
             api_url=user.api_url if user else None,
@@ -438,7 +578,7 @@ class MediaWikiClient:
         if user_id:
             params["user_id"] = user_id
 
-        data = await self._request(params, scopes=["check_access"], api_url=api_url, wiki_id=wiki_id)
+        data = await self.request(params, scopes=["check_access"], api_url=api_url, wiki_id=wiki_id)
 
         # The result is nested under 'mwassistant-check-access' key
         result = data.get("mwassistant-check-access", {})
