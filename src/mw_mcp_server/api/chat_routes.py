@@ -97,7 +97,7 @@ async def _get_schema_context(
 
     cats_coro = vector_store.get_pages_by_namespace(wiki_id, 14) if fetch_cats else asyncio.sleep(0)
     props_coro = vector_store.get_pages_by_namespace(wiki_id, 102) if fetch_props else asyncio.sleep(0)
-    ts_coro = vector_store.get_latest_embedding_timestamp(wiki_id)
+    ts_coro = vector_store.get_embedding_last_modified(wiki_id)
 
     cats_result, props_result, latest_ts = await asyncio.gather(cats_coro, props_coro, ts_coro)
     cats = cats_result if fetch_cats else []

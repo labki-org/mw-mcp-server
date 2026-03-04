@@ -201,6 +201,29 @@ class MediaWikiClient:
         return data
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_first_page(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Extract the first page from a standard action=query response.
+
+        Returns the page dict, or None if the page is missing.
+        Raises MediaWikiResponseError if the response structure is malformed.
+        """
+        try:
+            pages = data["query"]["pages"]
+        except KeyError as exc:
+            raise MediaWikiResponseError(
+                "Malformed MediaWiki response: missing query.pages."
+            ) from exc
+
+        if not pages or "missing" in pages[0]:
+            return None
+        return pages[0]
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -281,19 +304,12 @@ class MediaWikiClient:
         }
 
         data = await self.request(params, scopes=["page_read"], api_url=api_url, wiki_id=wiki_id)
-
-        try:
-            pages = data["query"]["pages"]
-        except KeyError as exc:
-            raise MediaWikiResponseError(
-                "Malformed MediaWiki response: missing query.pages."
-            ) from exc
-
-        if not pages or "missing" in pages[0]:
+        page = self._extract_first_page(data)
+        if page is None:
             return None
 
         try:
-            return pages[0]["revisions"][0]["content"]
+            return page["revisions"][0]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise MediaWikiResponseError(
                 f"Malformed revision structure for page '{title}'."
@@ -328,18 +344,10 @@ class MediaWikiClient:
             api_url=user.api_url if user else api_url,
             wiki_id=user.wiki_id if user else wiki_id,
         )
-
-        try:
-            pages = data["query"]["pages"]
-        except KeyError as exc:
-            raise MediaWikiResponseError(
-                "Malformed MediaWiki response: missing query.pages."
-            ) from exc
-
-        if not pages or "missing" in pages[0]:
+        page = self._extract_first_page(data)
+        if page is None:
             return None
 
-        page = pages[0]
         return {
             "title": page.get("title", title),
             "pageid": page.get("pageid"),
@@ -378,17 +386,12 @@ class MediaWikiClient:
             api_url=user.api_url if user else api_url,
             wiki_id=user.wiki_id if user else wiki_id,
         )
-
-        try:
-            pages = data["query"]["pages"]
-        except KeyError:
-            return None
-
-        if not pages or "missing" in pages[0]:
+        page = self._extract_first_page(data)
+        if page is None:
             return None
 
         try:
-            return pages[0]["revisions"][0]["timestamp"]
+            return page["revisions"][0]["timestamp"]
         except (KeyError, IndexError, TypeError):
             return None
 

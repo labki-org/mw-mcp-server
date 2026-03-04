@@ -30,6 +30,7 @@ from .schema_tools import NS_CATEGORY, NS_PROPERTY
 logger = logging.getLogger("mcp.wiki_tools")
 
 _SPECIAL_PRINTOUTS = frozenset({"category", "mainlabel"})
+_REDIRECT_RE = re.compile(r"#REDIRECT\s*\[\[(.+?)\]\]", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------
@@ -137,7 +138,7 @@ async def tool_get_page(
         return {"status": "empty", "title": title, "content": ""}
 
     # Handle redirects: if the content is a redirect, follow it
-    redirect_match = re.match(r"#REDIRECT\s*\[\[(.+?)\]\]", text, re.IGNORECASE)
+    redirect_match = _REDIRECT_RE.match(text)
     if redirect_match:
         target_title = redirect_match.group(1).strip()
         try:
@@ -217,11 +218,12 @@ async def _check_embedding_staleness(
     """
     from datetime import datetime
 
-    emb_ts = await vector_store.get_embedding_last_modified(user.wiki_id, title)
-
-    # Fetch live revision timestamp
-    rev_ts_str = await client.get_page_revision_timestamp(
-        title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
+    # Fetch embedding timestamp and live revision timestamp concurrently
+    emb_ts, rev_ts_str = await asyncio.gather(
+        vector_store.get_embedding_last_modified(user.wiki_id, title),
+        client.get_page_revision_timestamp(
+            title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
+        ),
     )
 
     if rev_ts_str is None:
@@ -230,12 +232,7 @@ async def _check_embedding_staleness(
     # Parse MW ISO timestamp (e.g. "2024-01-15T12:30:00Z")
     rev_ts = datetime.fromisoformat(rev_ts_str.replace("Z", "+00:00"))
 
-    # Determine namespace from title prefix
-    ns = 0
-    if ":" in title:
-        prefix = title.split(":", 1)[0]
-        ns_map = {"Category": 14, "Property": 102, "Template": 10, "Help": 12}
-        ns = ns_map.get(prefix, 0)
+    ns = _parse_namespace_from_title(title)
 
     is_stale = emb_ts is None or (
         emb_ts.tzinfo is None and rev_ts.replace(tzinfo=None) > emb_ts

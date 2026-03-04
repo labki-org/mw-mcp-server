@@ -176,29 +176,20 @@ class VectorStore:
     async def get_embedding_last_modified(
         self,
         wiki_id: str,
-        page_title: str,
+        page_title: Optional[str] = None,
     ) -> Optional[datetime]:
         """
-        Return the most recent last_modified timestamp for a page's embeddings.
+        Return the most recent last_modified timestamp for embeddings.
 
-        Returns None if the page has no embeddings.
-        """
-        stmt = (
-            select(func.max(Embedding.last_modified))
-            .where(Embedding.wiki_id == wiki_id)
-            .where(Embedding.page_title == page_title)
-        )
-        result = await self._session.execute(stmt)
-        return result.scalar()
-
-    async def get_latest_embedding_timestamp(self, wiki_id: str) -> Optional[datetime]:
-        """
-        Return the most recent last_modified across all embeddings for a wiki.
+        If page_title is given, scopes to that page. Otherwise returns the
+        latest timestamp across all embeddings for the wiki.
         """
         stmt = (
             select(func.max(Embedding.last_modified))
             .where(Embedding.wiki_id == wiki_id)
         )
+        if page_title is not None:
+            stmt = stmt.where(Embedding.page_title == page_title)
         result = await self._session.execute(stmt)
         return result.scalar()
 
