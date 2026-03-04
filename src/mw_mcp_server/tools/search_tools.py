@@ -32,6 +32,10 @@ logger = logging.getLogger("mcp.search")
 # than needed to allow for post-filtering by page-level permissions.
 VECTOR_OVERQUERY_MULTIPLIER = 3
 
+# How many of the over-queried results to validate via MediaWiki API.
+# Lower than VECTOR_OVERQUERY_MULTIPLIER to reduce permission-check API calls.
+PERMISSION_CHECK_MULTIPLIER = 2
+
 
 # ---------------------------------------------------------------------
 # Permission Validation via API Callback
@@ -149,9 +153,9 @@ async def tool_vector_search(
         return []
 
     # -------------------------------------------------------------
-    # Validate page access via API callback (top 2x results)
+    # Validate page access via API callback (top candidates)
     # -------------------------------------------------------------
-    candidates = raw_results[:k * VECTOR_OVERQUERY_MULTIPLIER]
+    candidates = raw_results[:k * PERMISSION_CHECK_MULTIPLIER]
     titles_to_check = list(set(title for title, _, _, _ in candidates))
 
     try:

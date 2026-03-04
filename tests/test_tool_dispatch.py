@@ -36,6 +36,18 @@ class TestToolDispatch:
             await dispatch_tool_call("mw_get_page", oversized_args, user, vs, embedder)
 
     @pytest.mark.asyncio
+    async def test_oversized_list_string_arg_rejected(self):
+        """String items inside list arguments should also be length-checked."""
+        user = MagicMock()
+        vs = MagicMock()
+        embedder = MagicMock()
+
+        oversized_args = {"names": ["ok", "x" * (MAX_TOOL_STRING_ARG_LENGTH + 1)]}
+
+        with pytest.raises(ValueError, match="exceeds maximum length"):
+            await dispatch_tool_call("mw_get_categories", oversized_args, user, vs, embedder)
+
+    @pytest.mark.asyncio
     async def test_normal_length_arg_accepted(self):
         """Normal-length string arguments should pass validation (tool may still fail)."""
         user = MagicMock()

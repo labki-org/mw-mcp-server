@@ -52,12 +52,11 @@ class RateLimiter:
         self,
         wiki_id: str,
         user_id: int,
+        *,
+        _for_update: bool = False,
     ) -> UsageStatus:
         """
         Check if a user is within their daily token limit.
-
-        Uses SELECT ... FOR UPDATE to prevent race conditions when
-        called within the same transaction as record_usage.
 
         Parameters
         ----------
@@ -65,6 +64,9 @@ class RateLimiter:
             Tenant wiki identifier.
         user_id : int
             MediaWiki user ID.
+        _for_update : bool
+            If True, acquires a row lock (FOR UPDATE). Only used
+            internally by record_usage to prevent race conditions.
 
         Returns
         -------
@@ -73,15 +75,15 @@ class RateLimiter:
         """
         today = date.today()
 
-        result = await self._session.execute(
-            select(TokenUsage)
-            .where(
-                TokenUsage.wiki_id == wiki_id,
-                TokenUsage.user_id == user_id,
-                TokenUsage.usage_date == today,
-            )
-            .with_for_update()
+        stmt = select(TokenUsage).where(
+            TokenUsage.wiki_id == wiki_id,
+            TokenUsage.user_id == user_id,
+            TokenUsage.usage_date == today,
         )
+        if _for_update:
+            stmt = stmt.with_for_update()
+
+        result = await self._session.execute(stmt)
         usage = result.scalar_one_or_none()
 
         tokens_used = usage.total_tokens if usage else 0
@@ -158,7 +160,7 @@ class RateLimiter:
         await self._session.execute(stmt)
         await self._session.flush()
         
-        return await self.check_limit(wiki_id, user_id)
+        return await self.check_limit(wiki_id, user_id, _for_update=True)
 
     async def get_usage_history(
         self,

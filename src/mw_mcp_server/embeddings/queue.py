@@ -34,13 +34,11 @@ class EmbeddingJob:
     # Metadata for tracing
     request_id: str = "unknown"
 
-MAX_QUEUE_SIZE = 1000
-
 class EmbeddingQueue:
     """Singleton queue for holding embedding jobs."""
-    def __init__(self, maxsize: int = MAX_QUEUE_SIZE):
-        self._queue: asyncio.Queue[EmbeddingJob] = asyncio.Queue(maxsize=maxsize)
-        self._maxsize = maxsize
+    def __init__(self, maxsize: int | None = None):
+        effective_size = maxsize if maxsize is not None else settings.embedding_queue_max_size
+        self._queue: asyncio.Queue[EmbeddingJob] = asyncio.Queue(maxsize=effective_size)
 
     async def enqueue(self, job: EmbeddingJob) -> int:
         """Add a job to the queue. Returns current queue size.
@@ -50,7 +48,7 @@ class EmbeddingQueue:
         if self._queue.full():
             try:
                 evicted = self._queue.get_nowait()
-                logger.warning(f"Queue full ({self._maxsize}), evicted oldest job: {evicted.title}")
+                logger.warning(f"Queue full ({self._queue.maxsize}), evicted oldest job: {evicted.title}")
                 self._queue.task_done()
             except asyncio.QueueEmpty:
                 pass  # Shouldn't happen if full() was True, but be safe
@@ -99,8 +97,17 @@ async def process_embeddings_worker_task():
             # Don't break the loop on random errors
             continue
 
+_mismatch_checked: set[str] = set()
+
 async def _check_embedding_model_mismatch(session, wiki_id: str) -> None:
-    """Log a warning if any existing embeddings use a different model."""
+    """Log a warning if any existing embeddings use a different model.
+
+    Caches the result per wiki_id since the configured model is immutable
+    at runtime, avoiding a DB query on every job.
+    """
+    if wiki_id in _mismatch_checked:
+        return
+
     result = await session.execute(
         select(Embedding.embedding_model)
         .where(Embedding.wiki_id == wiki_id)
@@ -117,6 +124,8 @@ async def _check_embedding_model_mismatch(session, wiki_id: str) -> None:
             old_model,
             settings.embedding_model,
         )
+
+    _mismatch_checked.add(wiki_id)
 
 
 async def _process_single_job(job: EmbeddingJob, embedder: Embedder):

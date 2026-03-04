@@ -284,5 +284,11 @@ async def dispatch_tool_call(
             raise ValueError(
                 f"Argument '{key}' exceeds maximum length of {MAX_TOOL_STRING_ARG_LENGTH} characters."
             )
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                if isinstance(item, str) and len(item) > MAX_TOOL_STRING_ARG_LENGTH:
+                    raise ValueError(
+                        f"Argument '{key}[{i}]' exceeds maximum length of {MAX_TOOL_STRING_ARG_LENGTH} characters."
+                    )
 
     return await handler(args, user, vector_store, embedder)
