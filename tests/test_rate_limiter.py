@@ -8,7 +8,7 @@ import pytest
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from mw_mcp_server.db.rate_limiter import RateLimiter, UsageStatus
+from mw_mcp_server.db.rate_limiter import RateLimiter
 
 
 class FakeTokenUsage:

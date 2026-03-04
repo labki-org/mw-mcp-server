@@ -5,7 +5,7 @@ Tests for the tool dispatch layer's input validation and routing.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from mw_mcp_server.tools.base import dispatch_tool_call, MAX_TOOL_STRING_ARG_LENGTH
 

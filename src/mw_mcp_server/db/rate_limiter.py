@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 

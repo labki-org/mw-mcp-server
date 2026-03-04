@@ -11,7 +11,7 @@ from ..config import settings
 from ..db import VectorStore, AsyncSessionLocal, Embedding
 from .embedder import Embedder
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 

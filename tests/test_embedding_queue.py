@@ -5,7 +5,6 @@ Tests for the bounded embedding queue with eviction logic.
 """
 
 import pytest
-import asyncio
 
 from mw_mcp_server.embeddings.queue import EmbeddingQueue, EmbeddingJob
 
