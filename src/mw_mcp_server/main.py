@@ -57,9 +57,12 @@ def _configure_logging() -> None:
         stream=sys.stdout,
     )
 
-    # Add the request ID filter to the root logger
-    root_logger = logging.getLogger()
-    root_logger.addFilter(RequestIDLogFilter())
+    # Add the request ID filter to every handler on the root logger so that
+    # all log records (including from third-party libraries like uvicorn)
+    # have the request_id attribute populated before formatting.
+    request_id_filter = RequestIDLogFilter()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(request_id_filter)
 
 
 _configure_logging()
