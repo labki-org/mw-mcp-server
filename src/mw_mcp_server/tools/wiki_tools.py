@@ -15,6 +15,7 @@ Responsibilities
 from __future__ import annotations
 
 from typing import Optional, Dict, Any
+import asyncio
 import re
 
 from ..wiki.api_client import MediaWikiClient
@@ -22,6 +23,8 @@ from ..wiki.smw_client import SMWClient
 from ..auth.models import UserContext
 from ..db import VectorStore
 from .schema_tools import NS_CATEGORY, NS_PROPERTY
+
+_SPECIAL_PRINTOUTS = frozenset({"category", "mainlabel"})
 
 
 # ---------------------------------------------------------------------
@@ -163,24 +166,14 @@ def _find_best_match(
         )
 
     # 4. Singular/plural heuristic
-    if name.lower().endswith("s"):
-        singular = name[:-1]
-        sing_var = f"{namespace_prefix}{singular}"
-        if sing_var in known_set:
-            raise ValueError(
-                f"{namespace_prefix.rstrip(':')} '{name}' not found. "
-                f"Did you mean '{sing_var}'? "
-                f"Please verify using `{tool_hint}`."
-            )
-    else:
-        plural = name + "s"
-        plural_var = f"{namespace_prefix}{plural}"
-        if plural_var in known_set:
-            raise ValueError(
-                f"{namespace_prefix.rstrip(':')} '{name}' not found. "
-                f"Did you mean '{plural_var}'? "
-                f"Please verify using `{tool_hint}`."
-            )
+    variant = name[:-1] if name.lower().endswith("s") else name + "s"
+    variant_full = f"{namespace_prefix}{variant}"
+    if variant_full in known_set:
+        raise ValueError(
+            f"{namespace_prefix.rstrip(':')} '{name}' not found. "
+            f"Did you mean '{variant_full}'? "
+            f"Please verify using `{tool_hint}`."
+        )
 
 
 async def tool_run_smw_ask(
@@ -222,29 +215,48 @@ async def tool_run_smw_ask(
         return {"result": "", "filtered_count": 0}
 
     if vector_store:
-        # Fetch known properties and categories (one DB call each)
-        known_props = set(await vector_store.get_pages_by_namespace(user.wiki_id, NS_PROPERTY))
-        known_cats = set(await vector_store.get_pages_by_namespace(user.wiki_id, NS_CATEGORY))
+        # Extract references from the query before hitting the DB
+        prop_conditions = re.findall(r"\[\[([^:\]]+)::", ask_query)
+        cat_conditions = re.findall(r"Category:([^\]|]+)", ask_query)
+        raw_printouts = re.findall(r"\|\?([A-Za-z][^|=\]#]*)", ask_query)
+        printout_props = [
+            m.strip() for m in raw_printouts
+            if m.strip().lower() not in _SPECIAL_PRINTOUTS
+        ]
+
+        needs_props = bool(prop_conditions or printout_props)
+        needs_cats = bool(cat_conditions)
+
+        # Fetch only needed namespaces, concurrently when both are required
+        known_props: set = set()
+        known_cats: set = set()
+        if needs_props and needs_cats:
+            props_list, cats_list = await asyncio.gather(
+                vector_store.get_pages_by_namespace(user.wiki_id, NS_PROPERTY),
+                vector_store.get_pages_by_namespace(user.wiki_id, NS_CATEGORY),
+            )
+            known_props = set(props_list)
+            known_cats = set(cats_list)
+        elif needs_props:
+            known_props = set(await vector_store.get_pages_by_namespace(user.wiki_id, NS_PROPERTY))
+        elif needs_cats:
+            known_cats = set(await vector_store.get_pages_by_namespace(user.wiki_id, NS_CATEGORY))
 
         # Pre-build lowercase lookup maps once
         props_lower = {p.lower(): p for p in known_props}
         cats_lower = {c.lower(): c for c in known_cats}
 
         # A) Condition properties: [[PropertyName::Value]]
-        for match in re.findall(r"\[\[([^:\]]+)::", ask_query):
+        for match in prop_conditions:
             _find_best_match(match, known_props, props_lower, "Property:")
 
         # B) Category conditions: [[Category:Name]]
-        #    Also catches OR syntax: [[Category:City||Category:Town]]
-        for match in re.findall(r"Category:([^\]|]+)", ask_query):
+        for match in cat_conditions:
             _find_best_match(match.strip(), known_cats, cats_lower, "Category:")
 
         # C) Printout properties: |?PropertyName  |?PropertyName=Label  |?PropertyName#fmt
-        #    Skip special SMW printouts that are not real properties.
-        SPECIAL_PRINTOUTS = {"category", "mainlabel"}
-        for match in re.findall(r"\|\?([A-Za-z][^|=\]#]*)", ask_query):
-            if match.strip().lower() not in SPECIAL_PRINTOUTS:
-                _find_best_match(match.strip(), known_props, props_lower, "Property:")
+        for match in printout_props:
+            _find_best_match(match, known_props, props_lower, "Property:")
 
     client = client or smw_client
     
