@@ -6,7 +6,7 @@ including the _find_best_match fuzzy-matching helper.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from mw_mcp_server.auth.models import UserContext
 from mw_mcp_server.tools.wiki_tools import _find_best_match, tool_run_smw_ask
