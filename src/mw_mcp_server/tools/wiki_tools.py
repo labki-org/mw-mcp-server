@@ -15,12 +15,16 @@ Responsibilities
 from __future__ import annotations
 
 from typing import Optional, Dict, Any
+import asyncio
 import re
 
 from ..wiki.api_client import MediaWikiClient
 from ..wiki.smw_client import SMWClient
 from ..auth.models import UserContext
 from ..db import VectorStore
+from .schema_tools import NS_CATEGORY, NS_PROPERTY
+
+_SPECIAL_PRINTOUTS = frozenset({"category", "mainlabel"})
 
 
 # ---------------------------------------------------------------------
@@ -120,6 +124,58 @@ async def tool_get_page(
     return text
 
 
+def _find_best_match(
+    name: str,
+    known_set: set,
+    known_lower_map: dict,
+    namespace_prefix: str,
+) -> None:
+    """
+    Fuzzy-match *name* against a known set of wiki page titles.
+
+    Raises ``ValueError`` with a suggestion when a close match is found.
+    Returns silently when the name is valid or when no close match exists
+    (to avoid false positives for built-in SMW properties, unindexed items, etc.).
+    """
+    tool_hint = (
+        "mw_get_properties" if namespace_prefix == "Property:" else "mw_get_categories"
+    )
+    check_name = f"{namespace_prefix}{name}"
+
+    # 1. Exact match — valid, nothing to do
+    if check_name in known_set:
+        return
+
+    # 2. "Has " prefix variation (Property namespace only)
+    if namespace_prefix == "Property:":
+        has_variation = f"Property:Has {name}"
+        if has_variation in known_set:
+            raise ValueError(
+                f"Property '{name}' does not exist. "
+                f"Did you mean '{has_variation}'? "
+                f"Please verify property names using `{tool_hint}`."
+            )
+
+    # 3. Case-insensitive match
+    if check_name.lower() in known_lower_map:
+        correct = known_lower_map[check_name.lower()]
+        raise ValueError(
+            f"{namespace_prefix.rstrip(':')}"
+            f" '{name}' does not exist (Case Mismatch). "
+            f"Did you mean '{correct}'? MediaWiki is case-sensitive."
+        )
+
+    # 4. Singular/plural heuristic
+    variant = name[:-1] if name.lower().endswith("s") else name + "s"
+    variant_full = f"{namespace_prefix}{variant}"
+    if variant_full in known_set:
+        raise ValueError(
+            f"{namespace_prefix.rstrip(':')} '{name}' not found. "
+            f"Did you mean '{variant_full}'? "
+            f"Please verify using `{tool_hint}`."
+        )
+
+
 async def tool_run_smw_ask(
     ask_query: str,
     user: UserContext,
@@ -159,58 +215,48 @@ async def tool_run_smw_ask(
         return {"result": "", "filtered_count": 0}
 
     if vector_store:
-        # Extract potential property names: [[Property::Value]] or [[Property::...]]
-        # Regex captures the part before '::' inside [[...]]
-        matches = re.findall(r"\[\[([^:\]]+)::", ask_query)
-        
-        # NS_PROPERTY = 102
-        known_props = set(await vector_store.get_pages_by_namespace(user.wiki_id, 102)) 
-        
-        # Build lookup maps if we have data
-        if known_props:
-            known_props_lower = {p.lower(): p for p in known_props}
-            
-            for prop_ref in matches:
-                # 1. Normalize query reference to potential canonical Property page title
-                if prop_ref.lower().startswith("property:"):
-                    check_name = prop_ref
-                else:
-                    check_name = f"Property:{prop_ref}"
+        # Extract references from the query before hitting the DB
+        prop_conditions = re.findall(r"\[\[([^:\]]+)::", ask_query)
+        cat_conditions = re.findall(r"Category:([^\]|]+)", ask_query)
+        raw_printouts = re.findall(r"\|\?([A-Za-z][^|=\]#]*)", ask_query)
+        printout_props = [
+            m.strip() for m in raw_printouts
+            if m.strip().lower() not in _SPECIAL_PRINTOUTS
+        ]
 
-                # 2. Check exact existence
-                if check_name in known_props:
-                    continue
-                
-                # 3. Check for "Has " prefix variation (Classic SMW pattern)
-                stripped_name = prop_ref.replace("Property:", "").strip()
-                has_variation = f"Property:Has {stripped_name}"
-                
-                if has_variation in known_props:
-                    raise ValueError(
-                        f"Property '{prop_ref}' does not exist. "
-                        f"Did you mean '{has_variation}'? "
-                        "Please verify property names using `mw_get_properties`."
-                    )
+        needs_props = bool(prop_conditions or printout_props)
+        needs_cats = bool(cat_conditions)
 
-                # 4. Check for Case Insensitivity
-                if check_name.lower() in known_props_lower:
-                    correct = known_props_lower[check_name.lower()]
-                    raise ValueError(
-                        f"Property '{prop_ref}' does not exist (Case Mismatch). "
-                        f"Did you mean '{correct}'? MediaWiki is case-sensitive."
-                    )
-                
-                # 5. Check singular/plural (simple heuristic)
-                if stripped_name.lower().endswith("s"):
-                     singular = stripped_name[:-1]
-                     sing_var = f"Property:{singular}"
-                     if sing_var in known_props:
-                         raise ValueError(f"Property '{prop_ref}' not found. Did you mean '{sing_var}'?")
-                else:
-                     plural = stripped_name + "s"
-                     plural_var = f"Property:{plural}"
-                     if plural_var in known_props:
-                          raise ValueError(f"Property '{prop_ref}' not found. Did you mean '{plural_var}'?")
+        # Fetch only needed namespaces, concurrently when both are required
+        known_props: set = set()
+        known_cats: set = set()
+        if needs_props and needs_cats:
+            props_list, cats_list = await asyncio.gather(
+                vector_store.get_pages_by_namespace(user.wiki_id, NS_PROPERTY),
+                vector_store.get_pages_by_namespace(user.wiki_id, NS_CATEGORY),
+            )
+            known_props = set(props_list)
+            known_cats = set(cats_list)
+        elif needs_props:
+            known_props = set(await vector_store.get_pages_by_namespace(user.wiki_id, NS_PROPERTY))
+        elif needs_cats:
+            known_cats = set(await vector_store.get_pages_by_namespace(user.wiki_id, NS_CATEGORY))
+
+        # Pre-build lowercase lookup maps once
+        props_lower = {p.lower(): p for p in known_props}
+        cats_lower = {c.lower(): c for c in known_cats}
+
+        # A) Condition properties: [[PropertyName::Value]]
+        for match in prop_conditions:
+            _find_best_match(match, known_props, props_lower, "Property:")
+
+        # B) Category conditions: [[Category:Name]]
+        for match in cat_conditions:
+            _find_best_match(match.strip(), known_cats, cats_lower, "Category:")
+
+        # C) Printout properties: |?PropertyName  |?PropertyName=Label  |?PropertyName#fmt
+        for match in printout_props:
+            _find_best_match(match, known_props, props_lower, "Property:")
 
     client = client or smw_client
     
@@ -223,6 +269,13 @@ async def tool_run_smw_ask(
          clean_query = clean_query[2:-2].strip()
          if clean_query.lower().startswith("#ask:"):
              clean_query = clean_query[5:].strip()
+
+    # Strip SMW result format parameters (e.g. |format=json, |format=csv).
+    # Our API endpoint evaluates queries via the parser and extracts HTML
+    # with getText(), so SMW format parameters like "json" produce empty
+    # output.  The API already returns structured JSON; the SMW-level
+    # format param is both unnecessary and breaks results.
+    clean_query = re.sub(r"\|format\s*=\s*\w+", "", clean_query)
 
     try:
         result = await client.ask(clean_query, user=user)
