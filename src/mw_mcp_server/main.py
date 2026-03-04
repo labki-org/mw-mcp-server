@@ -106,9 +106,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async with async_engine.begin() as conn:
             # Enable pgvector extension
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            # Create all tables
+            # Create any missing tables (idempotent)
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database initialized successfully")
+        logger.info("Database tables initialized")
+
+        # Run Alembic migrations for schema changes (e.g. new columns)
+        import asyncio
+        from alembic.config import Config as AlembicConfig
+        from alembic import command as alembic_command
+
+        alembic_cfg = AlembicConfig("alembic.ini")
+        await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
+        logger.info("Database migrations completed")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise
