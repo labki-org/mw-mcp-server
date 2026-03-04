@@ -20,7 +20,7 @@ import re
 
 import logging
 
-from ..wiki.api_client import MediaWikiClient
+from ..wiki.api_client import MediaWikiClient, PageContent
 from ..wiki.smw_client import SMWClient
 from ..auth.models import UserContext
 from ..db import VectorStore
@@ -124,21 +124,21 @@ async def tool_get_page(
     await _assert_user_can_read(user, title, client)
 
     try:
-        text = await client.get_page_wikitext(title, api_url=user.api_url, wiki_id=user.wiki_id, user=user)
+        page = await client.get_page_wikitext(title, api_url=user.api_url, wiki_id=user.wiki_id, user=user)
     except Exception as exc:
         # Normalize all exceptions for LLM tool loop
         raise ValueError(
             f"Failed to fetch wiki page '{title}': {type(exc).__name__}: {exc}"
         ) from exc
 
-    if text is None:
+    if page.wikitext is None:
         return {"status": "not_found", "title": title}
 
-    if not text.strip():
+    if not page.wikitext.strip():
         return {"status": "empty", "title": title, "content": ""}
 
     # Handle redirects: if the content is a redirect, follow it
-    redirect_match = _REDIRECT_RE.match(text)
+    redirect_match = _REDIRECT_RE.match(page.wikitext)
     if redirect_match:
         target_title = redirect_match.group(1).strip()
         try:
@@ -149,12 +149,12 @@ async def tool_get_page(
                 "status": "redirect",
                 "title": title,
                 "redirect_target": target_title,
-                "content": text,
+                "content": page.wikitext,
                 "note": "You do not have access to the redirect target page.",
             }
 
         try:
-            target_text = await client.get_page_wikitext(
+            target_page = await client.get_page_wikitext(
                 target_title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
             )
         except Exception:
@@ -163,24 +163,24 @@ async def tool_get_page(
                 "status": "redirect",
                 "title": title,
                 "redirect_target": target_title,
-                "content": text,
+                "content": page.wikitext,
                 "note": "Failed to fetch redirect target.",
             }
 
-        if target_text is None:
+        if target_page.wikitext is None:
             return {
                 "status": "redirect",
                 "title": title,
                 "redirect_target": target_title,
-                "content": text,
+                "content": page.wikitext,
                 "note": "Redirect target page does not exist.",
             }
 
         # Staleness detection on the target page instead
-        if vector_store is not None and target_text:
+        if vector_store is not None and target_page.wikitext:
             try:
                 await _check_embedding_staleness(
-                    target_title, target_text, user, client, vector_store
+                    target_title, target_page, user, vector_store
                 )
             except Exception:
                 logger.debug("Staleness check failed for '%s'", target_title, exc_info=True)
@@ -189,48 +189,48 @@ async def tool_get_page(
             "status": "redirect_followed",
             "original_title": title,
             "redirect_target": target_title,
-            "content": target_text,
+            "content": target_page.wikitext,
         }
 
     # Staleness detection: compare live revision vs embedding timestamp
-    if vector_store is not None and text:
+    if vector_store is not None and page.wikitext:
         try:
             await _check_embedding_staleness(
-                title, text, user, client, vector_store
+                title, page, user, vector_store
             )
         except Exception:
             # Staleness check is best-effort; don't fail the page fetch
             logger.debug("Staleness check failed for '%s'", title, exc_info=True)
 
-    return text
+    return page.wikitext
 
 
 async def _check_embedding_staleness(
     title: str,
-    content: str,
+    page: PageContent,
     user: UserContext,
-    client: MediaWikiClient,
     vector_store: VectorStore,
 ) -> None:
     """
-    Compare live page revision timestamp against embedding timestamp.
+    Compare page revision timestamp (from PageContent) against embedding timestamp.
     If stale or missing, enqueue a re-embedding job.
+
+    The revision timestamp comes from the mwassistant-page response, so no
+    extra API call is needed — this works on private wikis too.
     """
     from datetime import datetime
 
-    # Fetch embedding timestamp and live revision timestamp concurrently
-    emb_ts, rev_ts_str = await asyncio.gather(
-        vector_store.get_embedding_last_modified(user.wiki_id, title),
-        client.get_page_revision_timestamp(
-            title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
-        ),
-    )
-
+    rev_ts_str = page.timestamp
     if rev_ts_str is None:
-        return  # page doesn't exist on live wiki (shouldn't happen here)
+        return  # no timestamp available (older MW extension version)
 
-    # Parse MW ISO timestamp (e.g. "2024-01-15T12:30:00Z")
-    rev_ts = datetime.fromisoformat(rev_ts_str.replace("Z", "+00:00"))
+    emb_ts = await vector_store.get_embedding_last_modified(user.wiki_id, title)
+
+    # Parse MW timestamp: either ISO "2024-01-15T12:30:00Z" or MW format "20240115123000"
+    if "T" in rev_ts_str:
+        rev_ts = datetime.fromisoformat(rev_ts_str.replace("Z", "+00:00"))
+    else:
+        rev_ts = datetime.strptime(rev_ts_str, "%Y%m%d%H%M%S")
 
     ns = _parse_namespace_from_title(title)
 
@@ -245,7 +245,7 @@ async def _check_embedding_staleness(
         await embedding_queue.enqueue(EmbeddingJob(
             wiki_id=user.wiki_id,
             title=title,
-            content=content,
+            content=page.wikitext,
             namespace=ns,
             last_modified=rev_ts.replace(tzinfo=None),
             request_id=f"staleness-{user.wiki_id}-{title}",

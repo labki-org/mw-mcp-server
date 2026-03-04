@@ -15,6 +15,7 @@ Design Goals
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
 import logging
 import httpx
@@ -23,6 +24,17 @@ from ..auth.jwt_utils import create_mcp_to_mw_jwt
 from ..auth.models import UserContext
 
 logger = logging.getLogger("mcp.mediawiki")
+
+
+# ---------------------------------------------------------------------
+# Data Classes
+# ---------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PageContent:
+    """Result of fetching page wikitext, optionally including revision timestamp."""
+    wikitext: Optional[str]
+    timestamp: Optional[str] = None
 
 
 # ---------------------------------------------------------------------
@@ -233,7 +245,7 @@ class MediaWikiClient:
         api_url: Optional[str] = None,
         wiki_id: Optional[str] = None,
         user: Optional["UserContext"] = None,
-    ) -> Optional[str]:
+    ) -> PageContent:
         """
         Fetch the raw wikitext of a MediaWiki page.
 
@@ -258,8 +270,9 @@ class MediaWikiClient:
 
         Returns
         -------
-        Optional[str]
-            Raw wikitext if the page exists and is accessible, otherwise None.
+        PageContent
+            Wikitext and optional revision timestamp. Wikitext is None
+            if the page does not exist or is not accessible.
         """
         if not title:
             raise ValueError("Page title must be non-empty.")
@@ -290,14 +303,17 @@ class MediaWikiClient:
                     f"User '{user.username}' does not have read access to page: {title}"
                 )
             if not result.get("exists", False):
-                return None
-            return result.get("wikitext")
+                return PageContent(wikitext=None)
+            return PageContent(
+                wikitext=result.get("wikitext"),
+                timestamp=result.get("timestamp"),
+            )
 
         # Legacy path: standard action=query (no user permission checks)
         params = {
             "action": "query",
             "prop": "revisions",
-            "rvprop": "content",
+            "rvprop": "content|timestamp",
             "titles": title,
             "format": "json",
             "formatversion": 2,
@@ -306,10 +322,14 @@ class MediaWikiClient:
         data = await self.request(params, scopes=["page_read"], api_url=api_url, wiki_id=wiki_id)
         page = self._extract_first_page(data)
         if page is None:
-            return None
+            return PageContent(wikitext=None)
 
         try:
-            return page["revisions"][0]["content"]
+            rev = page["revisions"][0]
+            return PageContent(
+                wikitext=rev["content"],
+                timestamp=rev.get("timestamp"),
+            )
         except (KeyError, IndexError, TypeError) as exc:
             raise MediaWikiResponseError(
                 f"Malformed revision structure for page '{title}'."
