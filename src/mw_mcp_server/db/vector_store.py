@@ -48,6 +48,7 @@ class VectorStore:
         namespaces: List[int],
         embeddings: List[List[float]],
         last_modified: Optional[datetime] = None,
+        rev_id: Optional[int] = None,
         embedding_model: Optional[str] = None,
     ) -> int:
         """
@@ -67,6 +68,8 @@ class VectorStore:
             Vector embeddings matching the page_titles.
         last_modified : Optional[datetime]
             Timestamp for the embeddings.
+        rev_id : Optional[int]
+            MediaWiki revision ID this content was taken from.
         embedding_model : Optional[str]
             Name of the model used to generate these embeddings.
 
@@ -87,6 +90,7 @@ class VectorStore:
                 section_id=section,
                 namespace=ns,
                 last_modified=last_modified,
+                rev_id=rev_id,
                 embedding=emb,
                 embedding_model=embedding_model,
             )
@@ -208,33 +212,40 @@ class VectorStore:
         total_result = await self._session.execute(total_stmt)
         total_vectors = total_result.scalar() or 0
 
-        # Unique pages and their max timestamp
+        # Unique pages with their latest timestamp and rev_id. Group by title
+        # so multi-chunk pages collapse into one row.
         pages_stmt = (
             select(
                 Embedding.page_title,
-                func.max(Embedding.last_modified)
+                func.max(Embedding.last_modified),
+                func.max(Embedding.rev_id),
             )
             .where(Embedding.wiki_id == wiki_id)
             .group_by(Embedding.page_title)
         )
         pages_result = await self._session.execute(pages_stmt)
-        
+
         embedded_pages = []
         page_timestamps = {}
-        
+        page_revisions = {}
+
         for row in pages_result.all():
             title = row[0]
             last_mod = row[1]
+            rev_id = row[2]
             embedded_pages.append(title)
             if last_mod:
                 # Return MediaWiki-compatible format: YYYYMMDDHHMMSS
                 page_timestamps[title] = last_mod.strftime("%Y%m%d%H%M%S")
+            if rev_id is not None:
+                page_revisions[title] = int(rev_id)
 
         return {
             "total_vectors": total_vectors,
             "total_pages": len(embedded_pages),
             "embedded_pages": sorted(embedded_pages),
             "page_timestamps": page_timestamps,
+            "page_revisions": page_revisions,
         }
 
     async def rebuild(

@@ -30,7 +30,8 @@ class EmbeddingJob:
     content: str
     namespace: int
     last_modified: Optional[datetime]
-    
+    rev_id: Optional[int] = None
+
     # Metadata for tracing
     request_id: str = "unknown"
 
@@ -167,6 +168,7 @@ async def _process_single_job(job: EmbeddingJob, embedder: Embedder):
                 namespaces=[job.namespace] * len(text_chunks),
                 embeddings=embeddings,
                 last_modified=job.last_modified,
+                rev_id=job.rev_id,
                 embedding_model=settings.embedding_model,
             )
 

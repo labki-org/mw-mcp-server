@@ -112,7 +112,7 @@ def test_update_page_embedding(client, mock_settings, mock_vectors, mock_embedde
         "namespace": 0,
         "last_modified": "2023-01-01T12:00:00Z"
     }
-    
+
     # Mock the queue
     with patch("mw_mcp_server.embeddings.queue.embedding_queue.enqueue", new_callable=AsyncMock) as mock_enqueue:
         mock_enqueue.return_value = 1  # Queue size
@@ -121,15 +121,60 @@ def test_update_page_embedding(client, mock_settings, mock_vectors, mock_embedde
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "queued"
-        
+
         # Verify enqueue called
         mock_enqueue.assert_awaited_once()
-        
+
         # Verify background work did NOT happen synchronously
         mock_vectors.delete_page.assert_not_called()
         mock_embedder.embed.assert_not_called()
         mock_vectors.add_documents.assert_not_called()
         mock_vectors.commit.assert_not_called()
+
+
+def test_update_page_embedding_rev_id_forwarded(client, mock_settings):
+    """rev_id from the request payload should reach EmbeddingJob unchanged."""
+    token = create_valid_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "title": "Test Page",
+        "content": "hello",
+        "namespace": 0,
+        "rev_id": 12345,
+    }
+
+    with patch("mw_mcp_server.embeddings.queue.embedding_queue.enqueue", new_callable=AsyncMock) as mock_enqueue:
+        mock_enqueue.return_value = 1
+        resp = client.post("/embeddings/page", json=payload, headers=headers)
+        assert resp.status_code == 200
+
+        enqueued_job = mock_enqueue.call_args.args[0]
+        assert enqueued_job.rev_id == 12345
+        assert enqueued_job.title == "Test Page"
+
+
+def test_update_page_embedding_omitted_rev_id_is_none(client, mock_settings):
+    """Backwards compat: payload without rev_id should still work."""
+    token = create_valid_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {"title": "Test Page", "content": "hello", "namespace": 0}
+
+    with patch("mw_mcp_server.embeddings.queue.embedding_queue.enqueue", new_callable=AsyncMock) as mock_enqueue:
+        mock_enqueue.return_value = 1
+        resp = client.post("/embeddings/page", json=payload, headers=headers)
+        assert resp.status_code == 200
+        enqueued_job = mock_enqueue.call_args.args[0]
+        assert enqueued_job.rev_id is None
+
+
+def test_update_page_embedding_rejects_invalid_rev_id(client, mock_settings):
+    """rev_id must be a positive integer; zero/negative rejected at the boundary."""
+    token = create_valid_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {"title": "Test Page", "content": "hello", "rev_id": 0}
+
+    resp = client.post("/embeddings/page", json=payload, headers=headers)
+    assert resp.status_code == 422
 
 def test_delete_page_embedding(client, mock_settings, mock_vectors):
     token = create_valid_token()

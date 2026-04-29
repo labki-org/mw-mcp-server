@@ -82,13 +82,14 @@ async def update_page_embedding(
 
         # Create job
         from ..embeddings.queue import EmbeddingJob, embedding_queue
-        
+
         job = EmbeddingJob(
             wiki_id=user.wiki_id,
             title=req.title,
             content=req.content,
             namespace=req.namespace,
-            last_modified=last_modified
+            last_modified=last_modified,
+            rev_id=req.rev_id,
         )
 
         # Enqueue

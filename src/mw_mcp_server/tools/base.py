@@ -119,6 +119,7 @@ async def _handle_get_categories(
         names=args.get("names"),
         limit=args.get("limit", 50),
         allowed_namespaces=user.allowed_namespaces,
+        embedder=embedder,
     )
 
 
@@ -135,6 +136,7 @@ async def _handle_get_properties(
         names=args.get("names"),
         limit=args.get("limit", 50),
         allowed_namespaces=user.allowed_namespaces,
+        embedder=embedder,
     )
 
 

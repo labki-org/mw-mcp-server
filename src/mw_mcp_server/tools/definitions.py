@@ -207,8 +207,12 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "function": {
             "name": "mw_get_categories",
             "description": (
-                "Fetches a list of existing categories from the wiki index. "
-                "Use this to validate category names or find categories matching a pattern."
+                "Look up category pages from the wiki index. "
+                "Returns {matches, suggestions} for prefix mode or {found, missing, suggestions} "
+                "for names mode. The `suggestions` list contains semantically related categories "
+                "found via vector search — when your literal term doesn't match (e.g. 'Lab member'), "
+                "treat each suggestion as a candidate to investigate further. An empty `matches` "
+                "or `missing` entry does NOT mean the concept is absent from the wiki."
             ),
             "parameters": {
                 "type": "object",
@@ -238,8 +242,11 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "function": {
             "name": "mw_get_properties",
             "description": (
-                "Fetches a list of existing SMW properties from the wiki index. "
-                "Use this to validate property names or find properties matching a pattern."
+                "Look up SMW property pages from the wiki index. "
+                "Same response shape as mw_get_categories: {matches, suggestions} or "
+                "{found, missing, suggestions}. The `suggestions` list contains semantically "
+                "related properties — useful when properties use 'Has ' prefixes or naming "
+                "conventions different from your literal query."
             ),
             "parameters": {
                 "type": "object",
