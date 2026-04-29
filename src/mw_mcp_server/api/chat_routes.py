@@ -36,7 +36,8 @@ import time
 from typing import Annotated, Any, Awaitable, Dict, List, Optional, Protocol, Tuple
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -414,6 +415,335 @@ async def _run_tool_loop(
             )
 
     return final_answer or "", used_tools_log, prompt_tokens, completion_tokens
+
+
+# ---------------------------------------------------------------------
+# Streaming Chat Route (SSE)
+# ---------------------------------------------------------------------
+
+# Cap how much of a tool result we ship back to the UI. Full result still goes
+# back to the LLM in the next iteration.
+_TOOL_PREVIEW_MAX_BYTES = 4096
+
+
+def _sse(event_type: str, payload: Dict[str, Any]) -> bytes:
+    """Encode a payload as an SSE frame: ``event: <type>\\ndata: <json>\\n\\n``."""
+    body = json.dumps(payload, default=str)
+    return f"event: {event_type}\ndata: {body}\n\n".encode("utf-8")
+
+
+def _truncate_for_preview(value: Any) -> Any:
+    """Shrink a tool result to a UI-friendly preview, keeping JSON shape."""
+    serialized = json.dumps(value, default=str)
+    if len(serialized) <= _TOOL_PREVIEW_MAX_BYTES:
+        return value
+    return {
+        "_truncated": True,
+        "preview": serialized[:_TOOL_PREVIEW_MAX_BYTES],
+    }
+
+
+@router.post(
+    "/stream",
+    summary="Streaming chat with incremental tool-step events (SSE)",
+)
+async def chat_stream(
+    req: ChatRequest,
+    request: Request,
+    user: Annotated[UserContext, Depends(require_scopes("chat_completion"))],
+    llm: Annotated[LLMClient, Depends(get_llm_client)],
+    vector_store: Annotated[VectorStore, Depends(get_vector_store)],
+    embedder: Annotated[Embedder, Depends(get_embedder)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    rate_limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+) -> StreamingResponse:
+    """Stream chat events over SSE so the UI can render each step as it happens.
+
+    Event schema (each frame is ``event: <type>\\ndata: <json>\\n\\n``):
+
+    - ``session`` — first event; payload ``{"session_id", "created"}``.
+    - ``tool_start`` — payload ``{"call_id", "name", "args", "iteration"}``.
+    - ``tool_result`` — payload ``{"call_id", "name", "ok", "result_preview", "elapsed_ms"}``.
+    - ``assistant_message`` — payload ``{"content", "iteration", "is_final"}``
+      (emitted once per LLM iteration; the last one with ``is_final=true`` is the
+      user-facing answer).
+    - ``error`` — payload ``{"code", "message"}``; stream then closes.
+    - ``done`` — payload ``{"session_id", "used_tools", "tokens", "final_content"}``.
+
+    Auth: same as ``POST /chat/`` — JWT in ``Authorization`` header. The
+    extension must use ``fetch`` + ``ReadableStream`` (not ``EventSource``)
+    to send the header.
+    """
+    usage_status = await rate_limiter.check_limit(user.wiki_id, user.user_id)
+    if usage_status.is_limited:
+        reset_time = usage_status.reset_time.strftime("%Y-%m-%d %H:%M UTC")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Daily token limit exceeded. You have used {usage_status.tokens_used:,} "
+                f"of {usage_status.limit:,} tokens today. "
+                f"Your limit will reset at {reset_time}."
+            ),
+        )
+
+    # Resolve session up front so the first event carries an authoritative ID.
+    db_session: Optional[ChatSession] = None
+    history_llm: List[Dict[str, str]] = []
+    created = False
+
+    if req.session_id:
+        db_session = await _load_user_session(
+            session, req.session_id, user, with_messages=True
+        )
+        if db_session:
+            history_llm = _to_llm_messages(db_session.messages)
+
+    if not db_session:
+        db_session = ChatSession(wiki_id=user.wiki_id, owner_user_id=user.user_id)
+        session.add(db_session)
+        await session.flush()
+        created = True
+
+    full_context = history_llm + _to_llm_messages(req.messages)
+    base_prompt = EDITOR_SYSTEM_PROMPT if req.context == "editor" else CHAT_SYSTEM_PROMPT
+    schema_context = await _get_schema_context(
+        vector_store, user.wiki_id, allowed_namespaces=user.allowed_namespaces
+    )
+    system_prompt = base_prompt + schema_context
+
+    session_id_str = str(db_session.session_id)
+
+    async def event_generator():
+        loop_messages: List[Dict[str, Any]] = list(full_context)
+        used_tools_log: List[Dict[str, Any]] = []
+        prompt_tokens = 0
+        completion_tokens = 0
+        final_answer: str = ""
+        max_loops = settings.max_tool_loops
+
+        yield _sse("session", {"session_id": session_id_str, "created": created})
+
+        try:
+            for loop_count in range(max_loops):
+                if await request.is_disconnected():
+                    logger.info("Client disconnected before LLM iteration %d", loop_count)
+                    return
+
+                try:
+                    chat_result = await llm.chat(
+                        system_prompt, loop_messages, tools=TOOL_DEFINITIONS
+                    )
+                except Exception:
+                    logger.exception("LLM call failed at iteration %d", loop_count)
+                    yield _sse(
+                        "error",
+                        {"code": "llm_failure", "message": "LLM provider request failed."},
+                    )
+                    return
+
+                response_msg = chat_result.message
+                prompt_tokens += chat_result.usage.prompt_tokens
+                completion_tokens += chat_result.usage.completion_tokens
+                loop_messages.append(response_msg)
+
+                tool_calls = response_msg.get("tool_calls") or []
+                content = response_msg.get("content") or ""
+                is_final = not tool_calls
+
+                if content or is_final:
+                    yield _sse(
+                        "assistant_message",
+                        {
+                            "content": content,
+                            "iteration": loop_count,
+                            "is_final": is_final,
+                        },
+                    )
+
+                if is_final:
+                    final_answer = content
+                    break
+
+                for tc in tool_calls:
+                    if await request.is_disconnected():
+                        logger.info("Client disconnected mid-tool")
+                        return
+
+                    func_name = tc["function"]["name"]
+                    func_args_str = tc["function"]["arguments"]
+                    call_id = tc["id"]
+
+                    tool_log_entry: Dict[str, Any] = {
+                        "name": func_name,
+                        "args": func_args_str,
+                    }
+                    used_tools_log.append(tool_log_entry)
+
+                    try:
+                        parsed_args = json.loads(func_args_str)
+                    except json.JSONDecodeError:
+                        parsed_args = None
+
+                    if not isinstance(parsed_args, dict):
+                        msg = (
+                            "Invalid JSON arguments for tool call."
+                            if parsed_args is None
+                            else "Tool arguments must be a JSON object."
+                        )
+                        tool_output: Any = {"error": msg}
+                        tool_log_entry["result"] = tool_output
+                        _append_tool_result(loop_messages, call_id, tool_output)
+                        yield _sse(
+                            "tool_start",
+                            {
+                                "call_id": call_id,
+                                "name": func_name,
+                                "args": {},
+                                "iteration": loop_count,
+                            },
+                        )
+                        yield _sse(
+                            "tool_result",
+                            {
+                                "call_id": call_id,
+                                "name": func_name,
+                                "ok": False,
+                                "result_preview": tool_output,
+                                "elapsed_ms": 0,
+                            },
+                        )
+                        continue
+
+                    yield _sse(
+                        "tool_start",
+                        {
+                            "call_id": call_id,
+                            "name": func_name,
+                            "args": parsed_args,
+                            "iteration": loop_count,
+                        },
+                    )
+                    started = time.monotonic()
+                    ok = True
+                    try:
+                        tool_output = await dispatch_tool_call(
+                            func_name,
+                            parsed_args,
+                            user,
+                            vector_store=vector_store,
+                            embedder=embedder,
+                        )
+                    except Exception as exc:
+                        logger.exception("Tool %s execution failed", func_name)
+                        tool_output = {"error": f"Tool execution failed: {type(exc).__name__}"}
+                        ok = False
+
+                    elapsed_ms = int((time.monotonic() - started) * 1000)
+                    tool_log_entry["result"] = tool_output
+                    _append_tool_result(loop_messages, call_id, tool_output)
+                    yield _sse(
+                        "tool_result",
+                        {
+                            "call_id": call_id,
+                            "name": func_name,
+                            "ok": ok,
+                            "result_preview": _truncate_for_preview(tool_output),
+                            "elapsed_ms": elapsed_ms,
+                        },
+                    )
+            else:
+                # Loop exhausted — force a tool-free wrap-up call.
+                try:
+                    chat_result = await llm.chat(system_prompt, loop_messages, tools=None)
+                    prompt_tokens += chat_result.usage.prompt_tokens
+                    completion_tokens += chat_result.usage.completion_tokens
+                    final_answer = chat_result.message.get("content") or ""
+                    yield _sse(
+                        "assistant_message",
+                        {
+                            "content": final_answer,
+                            "iteration": max_loops,
+                            "is_final": True,
+                        },
+                    )
+                except Exception:
+                    logger.exception("Wrap-up LLM call failed after max tool loops")
+                    final_answer = (
+                        "I wasn't able to finish researching this — the assistant ran out "
+                        "of tool iterations and the wrap-up call to the language model "
+                        "failed. Please try again or rephrase your question."
+                    )
+                    yield _sse(
+                        "assistant_message",
+                        {
+                            "content": final_answer,
+                            "iteration": max_loops,
+                            "is_final": True,
+                        },
+                    )
+        finally:
+            # Always persist + record usage, even on disconnect or error.
+            try:
+                await rate_limiter.record_usage(
+                    wiki_id=user.wiki_id,
+                    user_id=user.user_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+                for m in req.messages:
+                    session.add(
+                        ChatMessage(
+                            session_id=db_session.session_id,
+                            sender=m.role,
+                            content=m.content,
+                        )
+                    )
+                session.add(
+                    ChatMessage(
+                        session_id=db_session.session_id,
+                        sender="assistant",
+                        content=final_answer,
+                        metadata_={
+                            "tools_used": [t["name"] for t in used_tools_log] or None,
+                            "tokens": {
+                                "prompt": prompt_tokens,
+                                "completion": completion_tokens,
+                                "total": prompt_tokens + completion_tokens,
+                            },
+                            "streamed": True,
+                        },
+                    )
+                )
+                if not db_session.title and req.messages:
+                    first = req.messages[0].content
+                    db_session.title = first[:100] + ("..." if len(first) > 100 else "")
+            except Exception:
+                logger.exception("Failed to persist streamed chat session")
+
+        yield _sse(
+            "done",
+            {
+                "session_id": session_id_str,
+                "used_tools": used_tools_log,
+                "tokens": {
+                    "prompt": prompt_tokens,
+                    "completion": completion_tokens,
+                    "total": prompt_tokens + completion_tokens,
+                },
+                "final_content": final_answer,
+            },
+        )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            # Disable proxy buffering so events flush immediately.
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ---------------------------------------------------------------------
