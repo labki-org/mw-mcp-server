@@ -60,6 +60,12 @@ class Embedding(Base):
         comment="MediaWiki revision ID this embedding was built from. Used "
                 "for exact freshness comparison; NULL on legacy rows.",
     )
+    content_sha1: Mapped[Optional[str]] = mapped_column(
+        String(40), nullable=True,
+        comment="SHA1 of the page content this embedding was built from. Lets the "
+                "worker skip the embed call when content is byte-identical to what "
+                "we already have (e.g. null edits that bump rev_id but not content).",
+    )
     embedding_model: Mapped[Optional[str]] = mapped_column(
         String(128), nullable=True,
         comment="Model used to generate this embedding (e.g. text-embedding-3-large)",

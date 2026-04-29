@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import List, Tuple, Optional
 from datetime import datetime
 
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Embedding
@@ -49,6 +49,7 @@ class VectorStore:
         embeddings: List[List[float]],
         last_modified: Optional[datetime] = None,
         rev_id: Optional[int] = None,
+        content_sha1: Optional[str] = None,
         embedding_model: Optional[str] = None,
     ) -> int:
         """
@@ -91,6 +92,7 @@ class VectorStore:
                 namespace=ns,
                 last_modified=last_modified,
                 rev_id=rev_id,
+                content_sha1=content_sha1,
                 embedding=emb,
                 embedding_model=embedding_model,
             )
@@ -98,6 +100,63 @@ class VectorStore:
 
         await self._session.flush()
         return len(embeddings)
+
+    async def get_page_sync_state(
+        self,
+        wiki_id: str,
+        page_title: str,
+    ) -> Optional[Tuple[Optional[str], Optional[int], Optional[str]]]:
+        """
+        Return (content_sha1, rev_id, embedding_model) for the most recent
+        embedding row of *page_title*, or None if the page has never been
+        embedded. Reads a single row (any chunk) since these fields are
+        identical across chunks of the same indexed revision.
+        """
+        stmt = (
+            select(
+                Embedding.content_sha1,
+                Embedding.rev_id,
+                Embedding.embedding_model,
+            )
+            .where(Embedding.wiki_id == wiki_id)
+            .where(Embedding.page_title == page_title)
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        row = result.first()
+        if row is None:
+            return None
+        return (row.content_sha1, row.rev_id, row.embedding_model)
+
+    async def touch_page_sync_metadata(
+        self,
+        wiki_id: str,
+        page_title: str,
+        rev_id: Optional[int],
+        last_modified: Optional[datetime],
+    ) -> int:
+        """
+        Update sync metadata (rev_id, last_modified) on every chunk of a page
+        without touching the vectors themselves. Used to record that a null edit
+        bumped rev_id even though content is unchanged, so the dashboard reads
+        the page as "synced" without paying for re-embedding.
+        """
+        values: dict = {}
+        if rev_id is not None:
+            values["rev_id"] = rev_id
+        if last_modified is not None:
+            values["last_modified"] = last_modified
+        if not values:
+            return 0
+
+        stmt = (
+            update(Embedding)
+            .where(Embedding.wiki_id == wiki_id)
+            .where(Embedding.page_title == page_title)
+            .values(**values)
+        )
+        result = await self._session.execute(stmt)
+        return result.rowcount or 0
 
     async def delete_page(self, wiki_id: str, page_title: str) -> int:
         """

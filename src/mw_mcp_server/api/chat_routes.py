@@ -184,7 +184,7 @@ async def _get_schema_context(
     props: List[str] = results[idx] if fetch_props else []
 
     cap = settings.schema_cap
-    parts = ["\n\n[KNOWN SCHEMA ELEMENTS (Truncated if > 100)]\n"]
+    parts = [f"\n\n[KNOWN SCHEMA ELEMENTS (truncated to first {cap} per kind)]\n"]
     if latest_ts:
         parts.append(f"Index last updated: {latest_ts.strftime('%Y-%m-%d %H:%M UTC')}\n")
     parts.append(f"Categories (~{len(cats)}): " + ", ".join(cats[:cap]))
