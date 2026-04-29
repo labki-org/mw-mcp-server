@@ -52,8 +52,6 @@ class RateLimiter:
         self,
         wiki_id: str,
         user_id: int,
-        *,
-        _for_update: bool = False,
     ) -> UsageStatus:
         """
         Check if a user is within their daily token limit.
@@ -64,9 +62,6 @@ class RateLimiter:
             Tenant wiki identifier.
         user_id : int
             MediaWiki user ID.
-        _for_update : bool
-            If True, acquires a row lock (FOR UPDATE). Only used
-            internally by record_usage to prevent race conditions.
 
         Returns
         -------
@@ -75,15 +70,13 @@ class RateLimiter:
         """
         today = date.today()
 
-        stmt = select(TokenUsage).where(
-            TokenUsage.wiki_id == wiki_id,
-            TokenUsage.user_id == user_id,
-            TokenUsage.usage_date == today,
+        result = await self._session.execute(
+            select(TokenUsage).where(
+                TokenUsage.wiki_id == wiki_id,
+                TokenUsage.user_id == user_id,
+                TokenUsage.usage_date == today,
+            )
         )
-        if _for_update:
-            stmt = stmt.with_for_update()
-
-        result = await self._session.execute(stmt)
         usage = result.scalar_one_or_none()
 
         tokens_used = usage.total_tokens if usage else 0
@@ -137,30 +130,46 @@ class RateLimiter:
         """
         today = date.today()
         total_tokens = prompt_tokens + completion_tokens
-        
-        # Upsert: insert or update on conflict
-        stmt = pg_insert(TokenUsage).values(
-            wiki_id=wiki_id,
-            user_id=user_id,
-            usage_date=today,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            request_count=1,
-        ).on_conflict_do_update(
-            constraint="uq_usage_user_date",
-            set_={
-                "prompt_tokens": TokenUsage.prompt_tokens + prompt_tokens,
-                "completion_tokens": TokenUsage.completion_tokens + completion_tokens,
-                "total_tokens": TokenUsage.total_tokens + total_tokens,
-                "request_count": TokenUsage.request_count + 1,
-            },
+
+        stmt = (
+            pg_insert(TokenUsage)
+            .values(
+                wiki_id=wiki_id,
+                user_id=user_id,
+                usage_date=today,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                request_count=1,
+            )
+            .on_conflict_do_update(
+                constraint="uq_usage_user_date",
+                set_={
+                    "prompt_tokens": TokenUsage.prompt_tokens + prompt_tokens,
+                    "completion_tokens": TokenUsage.completion_tokens + completion_tokens,
+                    "total_tokens": TokenUsage.total_tokens + total_tokens,
+                    "request_count": TokenUsage.request_count + 1,
+                },
+            )
+            .returning(TokenUsage.total_tokens, TokenUsage.request_count)
         )
-        
-        await self._session.execute(stmt)
-        await self._session.flush()
-        
-        return await self.check_limit(wiki_id, user_id, _for_update=True)
+
+        result = await self._session.execute(stmt)
+        tokens_used, requests_today = result.one()
+
+        tomorrow = datetime.combine(
+            today + timedelta(days=1),
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
+        return UsageStatus(
+            tokens_used=tokens_used,
+            tokens_remaining=max(0, self._daily_limit - tokens_used),
+            limit=self._daily_limit,
+            requests_today=requests_today,
+            is_limited=tokens_used >= self._daily_limit,
+            reset_time=tomorrow,
+        )
 
     async def get_usage_history(
         self,

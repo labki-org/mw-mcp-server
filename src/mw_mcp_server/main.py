@@ -16,18 +16,23 @@ Design Goals
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI
 from sqlalchemy import text
 
+from .api.dependencies import get_embedder, get_llm_client
 from .config import settings
 from .core.errors import unhandled_exception_handler
-from .core.middleware import RequestIDMiddleware, RequestIDLogFilter
-from .db import async_engine, Base
+from .core.middleware import RequestIDLogFilter, RequestIDMiddleware
+from .db import Base, async_engine
+from .embeddings.queue import process_embeddings_worker_task
 
 from .api import (
     chat_routes,
@@ -104,16 +109,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize database
     try:
         async with async_engine.begin() as conn:
-            # Enable pgvector extension
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-            # Create any missing tables (idempotent)
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database tables initialized")
-
-        # Run Alembic migrations for schema changes (e.g. new columns)
-        import asyncio
-        from alembic.config import Config as AlembicConfig
-        from alembic import command as alembic_command
 
         alembic_cfg = AlembicConfig("alembic.ini")
         await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
@@ -122,9 +120,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"Database initialization failed: {e}")
         raise
 
-    # Start background worker
-    import asyncio
-    from .embeddings.queue import process_embeddings_worker_task
     worker_task = asyncio.create_task(process_embeddings_worker_task())
     logger.info("Background embedding worker started")
 
@@ -133,14 +128,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # ---- Shutdown ----
     logger.info("Shutting down mw-mcp-server")
 
-    # Cancel background worker
     worker_task.cancel()
     try:
         await worker_task
     except asyncio.CancelledError:
         logger.info("Background embedding worker cancelled cleanly")
 
-    # Close database connections
+    # Close long-lived HTTP clients on the cached singletons.
+    await get_llm_client().aclose()
+    await get_embedder().aclose()
+
     await async_engine.dispose()
     logger.info("Database connections closed")
 

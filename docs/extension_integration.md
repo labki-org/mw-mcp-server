@@ -123,6 +123,110 @@ Send a user message to get an AI response that may utilize wiki tools.
 }
 ```
 
+### 1b. Streaming Chat (`POST /chat/stream`)
+
+Same request body as `POST /chat/`. Instead of buffering the full LLM tool loop
+and returning a single JSON response, the server streams Server-Sent Events
+(SSE) so the extension can render each step (tool start, tool result, assistant
+turn) as it happens.
+
+**Auth:** identical to `/chat/` — JWT in the `Authorization` header. The browser
+`EventSource` API can't send custom headers, so the extension must use `fetch`
+with a manual SSE parser:
+
+```js
+const res = await fetch(`${baseUrl}/chat/stream`, {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${jwt}`,
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+  },
+  body: JSON.stringify({ messages, session_id }),
+});
+
+const reader = res.body.getReader();
+const decoder = new TextDecoder();
+let buf = '';
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buf += decoder.decode(value, { stream: true });
+  const frames = buf.split('\n\n');
+  buf = frames.pop();          // last fragment may be incomplete
+  for (const frame of frames) {
+    const lines = frame.split('\n');
+    const event = lines.find(l => l.startsWith('event: '))?.slice(7);
+    const data  = lines.find(l => l.startsWith('data: '))?.slice(6);
+    if (event && data) handleEvent(event, JSON.parse(data));
+  }
+}
+```
+
+**Event sequence (always begins with `session`, always ends with `done` or `error`):**
+
+| Event | Payload | Notes |
+|-------|---------|-------|
+| `session` | `{session_id, created}` | Always first. `created=true` if a new session was opened. Persist `session_id` immediately. |
+| `assistant_message` | `{content, iteration, is_final}` | One per LLM iteration with text. The `is_final=true` one is the user-facing answer. |
+| `tool_start` | `{call_id, name, args, iteration}` | Emitted right before each tool runs. Use `call_id` to correlate with `tool_result`. |
+| `tool_result` | `{call_id, name, ok, result_preview, elapsed_ms}` | `ok=false` on tool error. `result_preview` is capped at ~4 KB; full result still fed back to the LLM. |
+| `error` | `{code, message}` | Fatal error mid-stream. Stream closes after this. `code` is one of `llm_failure`, `internal`. |
+| `done` | `{session_id, used_tools, tokens, final_content}` | Terminal event. `final_content` mirrors the last `assistant_message` for late-joining clients. |
+
+**Example stream:**
+
+```
+event: session
+data: {"session_id":"f3a1...","created":true}
+
+event: tool_start
+data: {"call_id":"call_abc","name":"mw_search_pages","args":{"query":"server room"},"iteration":0}
+
+event: tool_result
+data: {"call_id":"call_abc","name":"mw_search_pages","ok":true,"result_preview":[{"title":"Server_Room","score":0.92}],"elapsed_ms":143}
+
+event: assistant_message
+data: {"content":"The server room is in building 3.","iteration":1,"is_final":true}
+
+event: done
+data: {"session_id":"f3a1...","used_tools":[{"name":"mw_search_pages","args":"{\"query\":\"server room\"}","result":[...]}], "tokens":{"prompt":820,"completion":48,"total":868},"final_content":"The server room is in building 3."}
+```
+
+**Reverse-proxy notes:** SSE requires that nginx/Cloudflare not buffer the
+response. The server already sends `X-Accel-Buffering: no` and
+`Cache-Control: no-cache`, but nginx config in front of the server should set
+`proxy_buffering off;` and `proxy_read_timeout 300s;` for the `/chat/stream`
+location. Cloudflare's free tier buffers SSE — bypass via Page Rule or use
+WebSockets if you can't disable that.
+
+**Wiki-side proxy / FPM notes (extension):** the `Special:MWAssistantStream`
+proxy on the wiki side has its own deployment requirements:
+
+- *Apache + PHP-FPM via mod_proxy_fcgi*: set `flushpackets=on` on the relevant
+  `ProxyPass`, otherwise FastCGI buffers the entire response. Also exclude the
+  endpoint from `mod_deflate` and `mod_gzip` — `apache_setenv('no-gzip')` only
+  works under mod_php, not FPM.
+  ```apache
+  <LocationMatch "Special:MWAssistantStream">
+      SetEnvIfNoCase Request_URI "Special:MWAssistantStream" no-gzip dont-vary
+      SetOutputFilter !DEFLATE
+  </LocationMatch>
+  ProxyPass "/" "fcgi://php-fpm:9000/var/www/html/" flushpackets=on
+  ```
+- *FPM worker pool sizing*: each in-flight chat pins one PHP-FPM child for the
+  entire LLM tool loop (often 10–60s). With the default `pm.max_children = 5`,
+  five concurrent chats will block all other requests to the wiki. Either raise
+  `pm.max_children` or — better — give the streaming endpoint its own FPM pool
+  so chat traffic can never exhaust the pool serving normal page views.
+- *Per-user blocking is already handled*: the SpecialPage calls
+  `session_write_close()` immediately after auth, so a user with an in-flight
+  stream can keep navigating the wiki without waiting on their own session
+  lock.
+
+**Backwards compatibility:** `POST /chat/` is unchanged. Clients that don't
+implement SSE keep working; only the streaming UI uses `/chat/stream`.
+
 ### 2. Semantic Search (`POST /search/`)
 Perform a vector search against the indexed wiki content.
 
