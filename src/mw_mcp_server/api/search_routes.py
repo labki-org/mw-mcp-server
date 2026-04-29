@@ -16,7 +16,7 @@ from ..auth.models import UserContext
 from ..db import VectorStore
 from ..embeddings.embedder import Embedder
 from .dependencies import get_vector_store, get_embedder
-from ..tools.search_tools import tool_vector_search
+from ..tools.search_tools import vector_search
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -51,7 +51,7 @@ async def search(
     List[SearchResult]
         Ranked list of matching results.
     """
-    results = await tool_vector_search(
+    results = await vector_search(
         query=req.query,
         user=user,
         vector_store=vector_store,

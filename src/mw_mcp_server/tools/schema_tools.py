@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from ..db import VectorStore
 from ..embeddings.embedder import Embedder
+from .pagination import paginated
 
 # MediaWiki Constants
 NS_CATEGORY = 14
@@ -94,11 +95,15 @@ async def _list_namespace_with_suggestions(
 
     # Permission gate: pretend the namespace is empty if user can't read it.
     if allowed_namespaces is not None and namespace not in allowed_namespaces:
-        return {
-            "matches": [],
-            "suggestions": [],
-            "note": f"{namespace_label} namespace is not accessible to this user.",
-        }
+        return paginated(
+            [],
+            limit=limit,
+            label="matches",
+            extra={
+                "suggestions": [],
+                "note": f"{namespace_label} namespace is not accessible to this user.",
+            },
+        )
 
     # ---- Names mode: existence check with semantic suggestions for misses ----
     if names:
@@ -147,7 +152,12 @@ async def _list_namespace_with_suggestions(
             exclude=set(matches),
         )
 
-    return {"matches": matches, "suggestions": suggestions}
+    return paginated(
+        matches,
+        limit=limit,
+        label="matches",
+        extra={"suggestions": suggestions},
+    )
 
 
 async def tool_get_categories(
@@ -211,23 +221,25 @@ async def tool_list_pages(
     limit: int = 50,
     allowed_namespaces: Optional[List[int]] = None,
     **kwargs: Any,
-) -> List[str]:
+) -> Dict[str, Any]:
     """
     Retrieve existing pages from the index for a given namespace.
+
+    Returns a paginated wrapper ``{results, count, limit, truncated, note}``.
     """
     # Deny if user has no namespace access at all
     if allowed_namespaces is not None and not allowed_namespaces:
-        return []
+        return paginated([], limit=limit)
 
     # Deny if the requested namespace is not in user's allowed list
     if allowed_namespaces is not None and namespace is not None:
         if namespace not in allowed_namespaces:
-            return []
+            return paginated([], limit=limit)
 
     # When namespace is None (all namespaces) but user has restrictions,
     # deny the broad query to prevent leaking pages from restricted namespaces.
     if allowed_namespaces is not None and namespace is None:
-        return []
+        return paginated([], limit=limit)
 
     results = await vector_store.get_pages_by_namespace(wiki_id, namespace, pattern=prefix)
-    return results[:limit]
+    return paginated(results[:limit], limit=limit)

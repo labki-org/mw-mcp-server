@@ -26,6 +26,7 @@ from ..auth.models import UserContext
 from ..db import VectorStore
 from ..embeddings.queue import embedding_queue, EmbeddingJob
 from .schema_tools import NS_CATEGORY, NS_PROPERTY
+from .pagination import paginated
 
 logger = logging.getLogger("mcp.wiki_tools")
 
@@ -295,20 +296,20 @@ async def tool_get_category_members(
             f"Failed to fetch category members for '{category}': {type(exc).__name__}: {exc}"
         ) from exc
 
-    if not members:
-        return {"category": category, "members": [], "count": 0}
-
     # Filter through page-level access check
-    titles = [m.get("title", "") for m in members if m.get("title")]
-    if titles:
-        access_map = await client.check_read_access(titles, user)
-        members = [m for m in members if access_map.get(m.get("title", ""), False)]
+    if members:
+        titles = [m.get("title", "") for m in members if m.get("title")]
+        if titles:
+            access_map = await client.check_read_access(titles, user)
+            members = [m for m in members if access_map.get(m.get("title", ""), False)]
 
-    return {
-        "category": category,
-        "members": [{"title": m["title"], "ns": m.get("ns", 0)} for m in members],
-        "count": len(members),
-    }
+    rows = [{"title": m["title"], "ns": m.get("ns", 0)} for m in members]
+    return paginated(
+        rows,
+        limit=limit,
+        label="members",
+        extra={"category": category},
+    )
 
 
 def _find_best_match(
