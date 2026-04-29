@@ -151,10 +151,15 @@ class Settings(BaseSettings):
     )
 
     schema_cap: int = Field(
-        default=100,
+        default=300,
         ge=10,
-        le=1000,
-        description="Maximum number of schema elements (categories/properties) to include in system prompt.",
+        le=2000,
+        description=(
+            "Maximum number of schema elements (categories/properties) to include "
+            "in the system prompt. 300 fits comfortably in tokens and gives the "
+            "LLM enough vocabulary to recognize concept synonyms before falling "
+            "back to vector search."
+        ),
     )
 
     # ------------------------------------------------------------------

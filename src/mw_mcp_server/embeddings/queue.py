@@ -2,6 +2,7 @@
 Async queue for managing background embedding tasks.
 """
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -30,7 +31,8 @@ class EmbeddingJob:
     content: str
     namespace: int
     last_modified: Optional[datetime]
-    
+    rev_id: Optional[int] = None
+
     # Metadata for tracing
     request_id: str = "unknown"
 
@@ -141,8 +143,32 @@ async def _process_single_job(job: EmbeddingJob, embedder: Embedder):
         vector_store = VectorStore(session)
 
         try:
-            # Check for model mismatch before processing
             await _check_embedding_model_mismatch(session, job.wiki_id)
+
+            # Short-circuit if the new content is byte-identical to what we
+            # already have indexed under the same model. Saves the OpenAI call
+            # and the delete+insert churn for null edits / no-op saves. We
+            # still update rev_id / last_modified so the dashboard reads the
+            # page as "synced" against the new revision.
+            content_sha1 = hashlib.sha1(job.content.encode("utf-8")).hexdigest()
+            existing = await vector_store.get_page_sync_state(job.wiki_id, job.title)
+            if (
+                existing is not None
+                and existing.content_sha1 == content_sha1
+                and existing.embedding_model == settings.embedding_model
+            ):
+                await vector_store.touch_page_sync_metadata(
+                    wiki_id=job.wiki_id,
+                    page_title=job.title,
+                    rev_id=job.rev_id,
+                    last_modified=job.last_modified,
+                )
+                await vector_store.commit()
+                logger.info(
+                    "Embedding unchanged for %s; skipped re-embed (rev_id refreshed).",
+                    job.title,
+                )
+                return
 
             # 1. Chunk Content
             text_chunks = text_splitter.split_text(job.content)
@@ -167,6 +193,8 @@ async def _process_single_job(job: EmbeddingJob, embedder: Embedder):
                 namespaces=[job.namespace] * len(text_chunks),
                 embeddings=embeddings,
                 last_modified=job.last_modified,
+                rev_id=job.rev_id,
+                content_sha1=content_sha1,
                 embedding_model=settings.embedding_model,
             )
 

@@ -147,6 +147,11 @@ class EmbeddingUpdatePageRequest(BaseModel):
     content: str = Field(..., min_length=1)
     namespace: int = Field(default=0, ge=0)
     last_modified: Optional[str] = None
+    rev_id: Optional[int] = Field(
+        default=None, ge=1,
+        description="MediaWiki revision ID this content was taken from. "
+                    "Used for exact freshness comparison on /embeddings/stats.",
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -168,5 +173,11 @@ class EmbeddingStatsResponse(BaseModel):
     total_pages: int = Field(..., ge=0)
     embedded_pages: List[str] = Field(default_factory=list)
     page_timestamps: Dict[str, str] = Field(default_factory=dict)
+    page_revisions: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Map of page_title -> rev_id for embeddings that have one. "
+                    "Pages embedded before rev_id tracking won't appear here; "
+                    "callers should fall back to page_timestamps for those.",
+    )
 
     model_config = ConfigDict(extra="forbid")

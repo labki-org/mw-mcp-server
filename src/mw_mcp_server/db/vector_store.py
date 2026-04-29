@@ -7,13 +7,20 @@ Replaces the previous FAISS-based implementation.
 
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
+from typing import List, NamedTuple, Tuple, Optional
 from datetime import datetime
 
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Embedding
+
+
+class PageSyncState(NamedTuple):
+    """What we know about a page's currently-stored embedding."""
+    content_sha1: Optional[str]
+    rev_id: Optional[int]
+    embedding_model: Optional[str]
 
 
 class VectorStore:
@@ -48,6 +55,8 @@ class VectorStore:
         namespaces: List[int],
         embeddings: List[List[float]],
         last_modified: Optional[datetime] = None,
+        rev_id: Optional[int] = None,
+        content_sha1: Optional[str] = None,
         embedding_model: Optional[str] = None,
     ) -> int:
         """
@@ -67,6 +76,8 @@ class VectorStore:
             Vector embeddings matching the page_titles.
         last_modified : Optional[datetime]
             Timestamp for the embeddings.
+        rev_id : Optional[int]
+            MediaWiki revision ID this content was taken from.
         embedding_model : Optional[str]
             Name of the model used to generate these embeddings.
 
@@ -87,6 +98,8 @@ class VectorStore:
                 section_id=section,
                 namespace=ns,
                 last_modified=last_modified,
+                rev_id=rev_id,
+                content_sha1=content_sha1,
                 embedding=emb,
                 embedding_model=embedding_model,
             )
@@ -94,6 +107,67 @@ class VectorStore:
 
         await self._session.flush()
         return len(embeddings)
+
+    async def get_page_sync_state(
+        self,
+        wiki_id: str,
+        page_title: str,
+    ) -> Optional[PageSyncState]:
+        """
+        Return the sync metadata for the most recent embedding row of
+        *page_title*, or None if the page has never been embedded. Reads a
+        single row (any chunk) since these fields are identical across chunks
+        of the same indexed revision.
+        """
+        stmt = (
+            select(
+                Embedding.content_sha1,
+                Embedding.rev_id,
+                Embedding.embedding_model,
+            )
+            .where(Embedding.wiki_id == wiki_id)
+            .where(Embedding.page_title == page_title)
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        row = result.first()
+        if row is None:
+            return None
+        return PageSyncState(
+            content_sha1=row.content_sha1,
+            rev_id=row.rev_id,
+            embedding_model=row.embedding_model,
+        )
+
+    async def touch_page_sync_metadata(
+        self,
+        wiki_id: str,
+        page_title: str,
+        rev_id: Optional[int],
+        last_modified: Optional[datetime],
+    ) -> int:
+        """
+        Update sync metadata (rev_id, last_modified) on every chunk of a page
+        without touching the vectors themselves. Used to record that a null edit
+        bumped rev_id even though content is unchanged, so the dashboard reads
+        the page as "synced" without paying for re-embedding.
+        """
+        values: dict = {}
+        if rev_id is not None:
+            values["rev_id"] = rev_id
+        if last_modified is not None:
+            values["last_modified"] = last_modified
+        if not values:
+            return 0
+
+        stmt = (
+            update(Embedding)
+            .where(Embedding.wiki_id == wiki_id)
+            .where(Embedding.page_title == page_title)
+            .values(**values)
+        )
+        result = await self._session.execute(stmt)
+        return result.rowcount or 0
 
     async def delete_page(self, wiki_id: str, page_title: str) -> int:
         """
@@ -208,33 +282,40 @@ class VectorStore:
         total_result = await self._session.execute(total_stmt)
         total_vectors = total_result.scalar() or 0
 
-        # Unique pages and their max timestamp
+        # Unique pages with their latest timestamp and rev_id. Group by title
+        # so multi-chunk pages collapse into one row.
         pages_stmt = (
             select(
                 Embedding.page_title,
-                func.max(Embedding.last_modified)
+                func.max(Embedding.last_modified),
+                func.max(Embedding.rev_id),
             )
             .where(Embedding.wiki_id == wiki_id)
             .group_by(Embedding.page_title)
         )
         pages_result = await self._session.execute(pages_stmt)
-        
+
         embedded_pages = []
         page_timestamps = {}
-        
+        page_revisions = {}
+
         for row in pages_result.all():
             title = row[0]
             last_mod = row[1]
+            rev_id = row[2]
             embedded_pages.append(title)
             if last_mod:
                 # Return MediaWiki-compatible format: YYYYMMDDHHMMSS
                 page_timestamps[title] = last_mod.strftime("%Y%m%d%H%M%S")
+            if rev_id is not None:
+                page_revisions[title] = int(rev_id)
 
         return {
             "total_vectors": total_vectors,
             "total_pages": len(embedded_pages),
             "embedded_pages": sorted(embedded_pages),
             "page_timestamps": page_timestamps,
+            "page_revisions": page_revisions,
         }
 
     async def rebuild(
