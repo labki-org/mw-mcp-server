@@ -29,6 +29,17 @@ def _make_embedder(vector=None):
     return emb
 
 
+async def _get_categories(vs, emb, **kwargs):
+    """Shorthand for the test wiring shared across most cases."""
+    return await tool_get_categories(
+        vector_store=vs,
+        wiki_id="w",
+        embedder=emb,
+        allowed_namespaces=[NS_CATEGORY],
+        **kwargs,
+    )
+
+
 # ---------------------------------------------------------------------
 # names mode
 # ---------------------------------------------------------------------
@@ -39,13 +50,7 @@ async def test_categories_names_mode_returns_found_and_missing():
     vs = _make_vs(["Category:Person", "Category:Researcher"])
     emb = _make_embedder()
 
-    result = await tool_get_categories(
-        vector_store=vs,
-        wiki_id="w",
-        names=["Person", "LabMember"],
-        embedder=emb,
-        allowed_namespaces=[NS_CATEGORY],
-    )
+    result = await _get_categories(vs, emb, names=["Person", "LabMember"])
 
     assert result["found"] == ["Category:Person"]
     assert result["missing"] == ["LabMember"]
@@ -65,13 +70,7 @@ async def test_categories_names_mode_emits_suggestions_for_missing():
     )
     emb = _make_embedder()
 
-    result = await tool_get_categories(
-        vector_store=vs,
-        wiki_id="w",
-        names=["Person", "LabMember"],
-        embedder=emb,
-        allowed_namespaces=[NS_CATEGORY],
-    )
+    result = await _get_categories(vs, emb, names=["Person", "LabMember"])
 
     # Person was found, so it should NOT appear in suggestions.
     assert "Category:Person" not in result["suggestions"]
@@ -90,13 +89,7 @@ async def test_categories_names_mode_no_suggestions_when_all_found():
     vs = _make_vs(["Category:Person"])
     emb = _make_embedder()
 
-    result = await tool_get_categories(
-        vector_store=vs,
-        wiki_id="w",
-        names=["Person"],
-        embedder=emb,
-        allowed_namespaces=[NS_CATEGORY],
-    )
+    result = await _get_categories(vs, emb, names=["Person"])
 
     assert result["found"] == ["Category:Person"]
     assert result["missing"] == []
@@ -122,13 +115,7 @@ async def test_categories_prefix_with_few_matches_adds_suggestions():
     )
     emb = _make_embedder()
 
-    result = await tool_get_categories(
-        vector_store=vs,
-        wiki_id="w",
-        prefix="Lab",
-        embedder=emb,
-        allowed_namespaces=[NS_CATEGORY],
-    )
+    result = await _get_categories(vs, emb, prefix="Lab")
 
     assert result["matches"] == ["Category:Lab"]
     assert "Category:Lab" not in result["suggestions"]
@@ -143,13 +130,7 @@ async def test_categories_prefix_with_many_matches_skips_suggestions():
     )
     emb = _make_embedder()
 
-    result = await tool_get_categories(
-        vector_store=vs,
-        wiki_id="w",
-        prefix="C",
-        embedder=emb,
-        allowed_namespaces=[NS_CATEGORY],
-    )
+    result = await _get_categories(vs, emb, prefix="C")
 
     assert len(result["matches"]) >= 3
     assert result["suggestions"] == []
@@ -163,12 +144,7 @@ async def test_categories_no_prefix_skips_suggestions():
     vs = _make_vs(pages=["Category:A"])
     emb = _make_embedder()
 
-    result = await tool_get_categories(
-        vector_store=vs,
-        wiki_id="w",
-        embedder=emb,
-        allowed_namespaces=[NS_CATEGORY],
-    )
+    result = await _get_categories(vs, emb)
 
     assert result["suggestions"] == []
     emb.embed.assert_not_awaited()

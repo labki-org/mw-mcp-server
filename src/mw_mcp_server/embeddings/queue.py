@@ -154,8 +154,8 @@ async def _process_single_job(job: EmbeddingJob, embedder: Embedder):
             existing = await vector_store.get_page_sync_state(job.wiki_id, job.title)
             if (
                 existing is not None
-                and existing[0] == content_sha1
-                and existing[2] == settings.embedding_model
+                and existing.content_sha1 == content_sha1
+                and existing.embedding_model == settings.embedding_model
             ):
                 await vector_store.touch_page_sync_metadata(
                     wiki_id=job.wiki_id,

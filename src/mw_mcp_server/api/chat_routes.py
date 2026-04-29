@@ -77,7 +77,9 @@ _SCHEMA_CACHE_TTL_SECONDS = 60.0
 # Bound the cache so a long-running process with many distinct
 # (wiki_id, allowed_namespaces) combos can't grow it unboundedly. When full,
 # the oldest entry is evicted; ordering is by insertion order via dict.
-_SCHEMA_CACHE_MAX_ENTRIES = 256
+# Sized so total resident schema text stays well under 10 MB even with
+# schema_cap at its upper bound (~2000 elements × ~30 chars × 2 kinds).
+_SCHEMA_CACHE_MAX_ENTRIES = 512
 _schema_cache: Dict[Tuple[str, Optional[Tuple[int, ...]]], Tuple[float, str]] = {}
 
 

@@ -25,6 +25,10 @@ NS_PROPERTY = 102
 # How many semantic suggestions to surface when an exact lookup falls short.
 SEMANTIC_SUGGESTION_LIMIT = 10
 
+# Over-query pgvector by this multiple of k so dedupe-by-title still leaves
+# us with k distinct suggestions when chunks of the same page rank highly.
+SEMANTIC_OVERQUERY_MULTIPLIER = 3
+
 # When prefix-mode returns fewer hits than this, attach semantic suggestions
 # to help the LLM expand its search.
 SUGGESTION_FALLBACK_THRESHOLD = 3
@@ -57,8 +61,7 @@ async def _semantic_namespace_suggestions(
     raw = await vector_store.search(
         wiki_id=wiki_id,
         query_embedding=embeddings[0],
-        # Over-query so dedupe-by-title still leaves enough suggestions.
-        k=k * 3,
+        k=k * SEMANTIC_OVERQUERY_MULTIPLIER,
         namespace_filter=[namespace],
     )
 

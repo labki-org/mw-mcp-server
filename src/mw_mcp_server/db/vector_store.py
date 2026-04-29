@@ -7,13 +7,20 @@ Replaces the previous FAISS-based implementation.
 
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
+from typing import List, NamedTuple, Tuple, Optional
 from datetime import datetime
 
 from sqlalchemy import select, delete, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Embedding
+
+
+class PageSyncState(NamedTuple):
+    """What we know about a page's currently-stored embedding."""
+    content_sha1: Optional[str]
+    rev_id: Optional[int]
+    embedding_model: Optional[str]
 
 
 class VectorStore:
@@ -105,12 +112,12 @@ class VectorStore:
         self,
         wiki_id: str,
         page_title: str,
-    ) -> Optional[Tuple[Optional[str], Optional[int], Optional[str]]]:
+    ) -> Optional[PageSyncState]:
         """
-        Return (content_sha1, rev_id, embedding_model) for the most recent
-        embedding row of *page_title*, or None if the page has never been
-        embedded. Reads a single row (any chunk) since these fields are
-        identical across chunks of the same indexed revision.
+        Return the sync metadata for the most recent embedding row of
+        *page_title*, or None if the page has never been embedded. Reads a
+        single row (any chunk) since these fields are identical across chunks
+        of the same indexed revision.
         """
         stmt = (
             select(
@@ -126,7 +133,11 @@ class VectorStore:
         row = result.first()
         if row is None:
             return None
-        return (row.content_sha1, row.rev_id, row.embedding_model)
+        return PageSyncState(
+            content_sha1=row.content_sha1,
+            rev_id=row.rev_id,
+            embedding_model=row.embedding_model,
+        )
 
     async def touch_page_sync_metadata(
         self,
