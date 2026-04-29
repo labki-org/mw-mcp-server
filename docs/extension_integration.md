@@ -200,6 +200,30 @@ response. The server already sends `X-Accel-Buffering: no` and
 location. Cloudflare's free tier buffers SSE — bypass via Page Rule or use
 WebSockets if you can't disable that.
 
+**Wiki-side proxy / FPM notes (extension):** the `Special:MWAssistantStream`
+proxy on the wiki side has its own deployment requirements:
+
+- *Apache + PHP-FPM via mod_proxy_fcgi*: set `flushpackets=on` on the relevant
+  `ProxyPass`, otherwise FastCGI buffers the entire response. Also exclude the
+  endpoint from `mod_deflate` and `mod_gzip` — `apache_setenv('no-gzip')` only
+  works under mod_php, not FPM.
+  ```apache
+  <LocationMatch "Special:MWAssistantStream">
+      SetEnvIfNoCase Request_URI "Special:MWAssistantStream" no-gzip dont-vary
+      SetOutputFilter !DEFLATE
+  </LocationMatch>
+  ProxyPass "/" "fcgi://php-fpm:9000/var/www/html/" flushpackets=on
+  ```
+- *FPM worker pool sizing*: each in-flight chat pins one PHP-FPM child for the
+  entire LLM tool loop (often 10–60s). With the default `pm.max_children = 5`,
+  five concurrent chats will block all other requests to the wiki. Either raise
+  `pm.max_children` or — better — give the streaming endpoint its own FPM pool
+  so chat traffic can never exhaust the pool serving normal page views.
+- *Per-user blocking is already handled*: the SpecialPage calls
+  `session_write_close()` immediately after auth, so a user with an in-flight
+  stream can keep navigating the wiki without waiting on their own session
+  lock.
+
 **Backwards compatibility:** `POST /chat/` is unchanged. Clients that don't
 implement SSE keep working; only the streaming UI uses `/chat/stream`.
 

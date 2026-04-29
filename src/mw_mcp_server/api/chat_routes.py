@@ -74,6 +74,10 @@ NS_PROPERTY = 102
 # are added/deleted (via the background worker). 60s of staleness is acceptable
 # and saves 2-3 DB queries per chat turn.
 _SCHEMA_CACHE_TTL_SECONDS = 60.0
+# Bound the cache so a long-running process with many distinct
+# (wiki_id, allowed_namespaces) combos can't grow it unboundedly. When full,
+# the oldest entry is evicted; ordering is by insertion order via dict.
+_SCHEMA_CACHE_MAX_ENTRIES = 256
 _schema_cache: Dict[Tuple[str, Optional[Tuple[int, ...]]], Tuple[float, str]] = {}
 
 
@@ -193,6 +197,10 @@ async def _get_schema_context(
     parts.append("\n[END SCHEMA CONTEXT]\n\n")
 
     rendered = "".join(parts)
+    if len(_schema_cache) >= _SCHEMA_CACHE_MAX_ENTRIES:
+        # Evict the oldest entry; dicts preserve insertion order in 3.7+.
+        oldest = next(iter(_schema_cache))
+        _schema_cache.pop(oldest, None)
     _schema_cache[cache_key] = (now, rendered)
     return rendered
 

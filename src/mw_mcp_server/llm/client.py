@@ -94,7 +94,14 @@ class LLMClient:
     def _get_http_client(self) -> httpx.AsyncClient:
         """Lazily create a long-lived AsyncClient for connection pooling."""
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=httpx.Limits(
+                    max_connections=100,
+                    max_keepalive_connections=20,
+                    keepalive_expiry=30.0,
+                ),
+            )
         return self._client
 
     async def aclose(self) -> None:
