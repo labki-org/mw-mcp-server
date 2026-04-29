@@ -63,6 +63,18 @@ class Embedder:
         self.model = model or settings.embedding_model
         self.base_url = base_url
         self.timeout = timeout
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _get_http_client(self) -> httpx.AsyncClient:
+        """Lazily create a long-lived AsyncClient for connection pooling."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -99,35 +111,35 @@ class Embedder:
 
         all_embeddings: List[List[float]] = []
         headers = {"Authorization": f"Bearer {self.api_key}"}
+        client = self._get_http_client()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for start in range(0, len(texts), batch_size):
-                batch = list(texts[start : start + batch_size])
-                payload = {
-                    "model": self.model,
-                    "input": batch,
-                }
+        for start in range(0, len(texts), batch_size):
+            batch = list(texts[start : start + batch_size])
+            payload = {
+                "model": self.model,
+                "input": batch,
+            }
 
-                try:
-                    response = await client.post(
-                        self.base_url,
-                        json=payload,
-                        headers=headers,
-                    )
-                    response.raise_for_status()
-                except httpx.HTTPError as exc:
-                    logger.error(
-                        "Embedding request failed (%s): batch size=%d, error=%s",
-                        type(exc).__name__,
-                        len(batch),
-                        str(exc),
-                    )
-                    raise EmbeddingError(
-                        f"Embedding generation failed: {type(exc).__name__}"
-                    ) from exc
+            try:
+                response = await client.post(
+                    self.base_url,
+                    json=payload,
+                    headers=headers,
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                logger.error(
+                    "Embedding request failed (%s): batch size=%d, error=%s",
+                    type(exc).__name__,
+                    len(batch),
+                    str(exc),
+                )
+                raise EmbeddingError(
+                    f"Embedding generation failed: {type(exc).__name__}"
+                ) from exc
 
-                embeddings = self._extract_embeddings(response.json())
-                all_embeddings.extend(embeddings)
+            embeddings = self._extract_embeddings(response.json())
+            all_embeddings.extend(embeddings)
 
         return all_embeddings
 

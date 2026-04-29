@@ -44,46 +44,6 @@ smw_client = SMWClient(mw_client)
 
 
 # ---------------------------------------------------------------------
-# Permission Layer
-# ---------------------------------------------------------------------
-
-async def _assert_user_can_read(
-    user: UserContext,
-    title: str,
-    client: Optional[MediaWikiClient] = None,
-) -> None:
-    """
-    Validate that a user can read a specific page.
-
-    This is called before returning page content to the LLM to ensure
-    ControlAccess and Lockdown restrictions are respected.
-
-    Parameters
-    ----------
-    user : UserContext
-        Authenticated user context.
-
-    title : str
-        Page title to check.
-
-    client : MediaWikiClient
-        Optional client override for testing.
-
-    Raises
-    ------
-    PermissionError
-        If the user cannot read the page.
-    """
-    client = client or mw_client
-    access_map = await client.check_read_access([title], user)
-
-    if not access_map.get(title, False):
-        raise PermissionError(
-            f"User '{user.username}' does not have read access to page: {title}"
-        )
-
-
-# ---------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------
 
@@ -120,13 +80,11 @@ async def tool_get_page(
 
     client = client or mw_client
 
-    # Check permission before fetching page content
-    await _assert_user_can_read(user, title, client)
-
     try:
         page = await client.get_page_wikitext(title, api_url=user.api_url, wiki_id=user.wiki_id, user=user)
+    except PermissionError:
+        raise
     except Exception as exc:
-        # Normalize all exceptions for LLM tool loop
         raise ValueError(
             f"Failed to fetch wiki page '{title}': {type(exc).__name__}: {exc}"
         ) from exc
@@ -142,9 +100,10 @@ async def tool_get_page(
     if redirect_match:
         target_title = redirect_match.group(1).strip()
         try:
-            await _assert_user_can_read(user, target_title, client)
+            target_page = await client.get_page_wikitext(
+                target_title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
+            )
         except PermissionError:
-            # User can read source but not target — return redirect wikitext as-is
             return {
                 "status": "redirect",
                 "title": title,
@@ -152,13 +111,7 @@ async def tool_get_page(
                 "content": page.wikitext,
                 "note": "You do not have access to the redirect target page.",
             }
-
-        try:
-            target_page = await client.get_page_wikitext(
-                target_title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
-            )
         except Exception:
-            # Can't fetch target — return the redirect source
             return {
                 "status": "redirect",
                 "title": title,
@@ -286,13 +239,12 @@ async def tool_page_info(
             f"User '{user.username}' does not have access to namespace {ns}"
         )
 
-    # Page-level permission check
-    await _assert_user_can_read(user, title, client)
-
     try:
         info = await client.get_page_info(
             title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
         )
+    except PermissionError:
+        raise
     except Exception as exc:
         raise ValueError(
             f"Failed to fetch page info for '{title}': {type(exc).__name__}: {exc}"

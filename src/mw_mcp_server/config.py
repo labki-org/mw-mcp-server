@@ -278,8 +278,7 @@ class Settings(BaseSettings):
         If empty, populates a default entry from legacy env vars if they exist.
         """
         import json
-        
-        # 1. Try to load from WIKI_CREDS env var
+
         creds_map = {}
         if isinstance(v, str) and v.strip():
             try:
@@ -289,20 +288,11 @@ class Settings(BaseSettings):
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSON in WIKI_CREDS: {exc}")
         elif isinstance(v, dict):
-             creds_map = {k: WikiCredentials(**val) if isinstance(val, dict) else val for k, val in v.items()}
+            creds_map = {
+                k: WikiCredentials(**val) if isinstance(val, dict) else val
+                for k, val in v.items()
+            }
 
-        # 2. If no WIKI_CREDS, try legacy env vars (backward compatibility)
-        # Note: We access values from info.data because validation runs after env loading
-        if not creds_map:
-
-            
-            # If we have legacy secrets, we treat them as a "default" fallback 
-            # that can be used if a token doesn't match any specific wiki_id,
-            # or we can map them to a specific default ID.
-            # For now, let's keep the legacy secrets in the main Settings object 
-            # and use them as global fallbacks in the code.
-            pass
-            
         return creds_map
 
     @model_validator(mode="after")

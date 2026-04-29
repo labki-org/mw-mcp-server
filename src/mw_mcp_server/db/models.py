@@ -64,6 +64,7 @@ class Embedding(Base):
 
     __table_args__ = (
         Index("idx_embedding_wiki_page", "wiki_id", "page_title"),
+        Index("idx_embedding_wiki_ns", "wiki_id", "namespace", "page_title"),
     )
 
 

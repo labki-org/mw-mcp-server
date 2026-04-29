@@ -82,20 +82,25 @@ async def process_embeddings_worker_task():
     while True:
         try:
             job = await embedding_queue.get_next_job()
-            logger.info(f"Processing embedding job: {job.title} ({job.wiki_id})")
-
-            await _process_single_job(job, embedder)
-            
-            embedding_queue.task_done()
-            logger.info(f"Finished embedding job: {job.title}")
-
         except asyncio.CancelledError:
             logger.info("Embedding worker cancelled.")
             break
+
+        cancelled = False
+        try:
+            logger.info(f"Processing embedding job: {job.title} ({job.wiki_id})")
+            await _process_single_job(job, embedder)
+            logger.info(f"Finished embedding job: {job.title}")
+        except asyncio.CancelledError:
+            logger.info("Embedding worker cancelled mid-job.")
+            cancelled = True
         except Exception:
             logger.exception("Unexpected error in embedding worker")
-            # Don't break the loop on random errors
-            continue
+        finally:
+            embedding_queue.task_done()
+
+        if cancelled:
+            break
 
 _mismatch_checked: set[str] = set()
 
