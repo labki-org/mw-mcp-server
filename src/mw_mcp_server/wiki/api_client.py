@@ -581,6 +581,46 @@ class MediaWikiClient:
 
         return titles
 
+    async def find_pages_by_title_prefix(
+        self,
+        prefix: str,
+        namespace: int = 0,
+        limit: int = 50,
+        api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
+        user: Optional["UserContext"] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List pages whose title starts with ``prefix`` via ``list=allpages``.
+
+        Authoritative against the page table (no fulltext-search index lag),
+        so it picks up newly created pages immediately. Each row is
+        ``{title, ns, pageid}``.
+        """
+        if not prefix:
+            raise ValueError("find_pages_by_title_prefix requires a non-empty prefix.")
+
+        params: Dict[str, Any] = {
+            "action": "query",
+            "list": "allpages",
+            "apprefix": prefix,
+            "apnamespace": namespace,
+            "aplimit": min(max(limit, 1), 500),
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        target_api = user.api_url if user else api_url
+        target_wiki = user.wiki_id if user else wiki_id
+        data = await self.request(
+            params, scopes=["page_read"], api_url=target_api, wiki_id=target_wiki,
+        )
+
+        try:
+            return data["query"]["allpages"]
+        except KeyError:
+            return []
+
     async def search_pages(
         self, query: str, limit: int = 10, user: Optional[UserContext] = None
     ) -> List[Dict[str, Any]]:

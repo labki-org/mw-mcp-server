@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any, Dict, Callable, Awaitable, Optional
 
 from .wiki_tools import tool_get_page, tool_run_smw_ask, tool_page_info, tool_get_category_members
-from .search_tools import tool_vector_search, tool_search_pages
+from .search_tools import tool_vector_search, tool_search_pages, tool_find_pages_by_title
 from .schema_tools import tool_get_categories, tool_get_properties, tool_list_pages
 from ..auth.models import UserContext
 from ..embeddings.embedder import Embedder
@@ -227,12 +227,30 @@ async def _handle_get_category_members(
     return await tool_get_category_members(category, user, limit=limit)
 
 
+async def _handle_find_pages_by_title(
+    args: Dict[str, Any],
+    user: UserContext,
+    vector_store: VectorStore,
+    embedder: Embedder,
+) -> Any:
+    prefix = args.get("prefix")
+    if not prefix:
+        raise ValueError("mw_find_pages_by_title requires 'prefix' argument.")
+    return await tool_find_pages_by_title(
+        prefix=prefix,
+        user=user,
+        namespace=int(args.get("namespace", 0)),
+        limit=int(args.get("limit", 50)),
+    )
+
+
 TOOL_REGISTRY: Dict[str, ToolHandler] = {
     "mw_get_page": _handle_get_page,
     "mw_page_info": _handle_page_info,
     "mw_run_smw_ask": _handle_smw_ask,
     "mw_vector_search": _handle_vector_search,
     "mw_search_pages": _handle_search_pages,
+    "mw_find_pages_by_title": _handle_find_pages_by_title,
     "mw_get_categories": _handle_get_categories,
     "mw_get_properties": _handle_get_properties,
     "mw_list_pages": _handle_list_pages,

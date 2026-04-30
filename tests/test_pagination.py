@@ -64,6 +64,47 @@ async def test_list_pages_returns_paginated_envelope():
 
 
 @pytest.mark.asyncio
+async def test_find_pages_by_title_filters_by_access_and_paginates():
+    """`mw_find_pages_by_title` must (a) hit the page table via the
+    MediaWikiClient (not the embedding store), (b) drop pages the user
+    can't read, and (c) wrap the result in the paginated envelope."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from mw_mcp_server.tools.search_tools import tool_find_pages_by_title
+
+    fake_client = SimpleNamespace(
+        find_pages_by_title_prefix=AsyncMock(return_value=[
+            {"title": "Test1", "ns": 0},
+            {"title": "Test678", "ns": 0},
+            {"title": "Test_Hidden", "ns": 0},
+        ]),
+        check_read_access=AsyncMock(return_value={
+            "Test1": True,
+            "Test678": True,
+            "Test_Hidden": False,  # user can't read this one
+        }),
+    )
+
+    user = SimpleNamespace(
+        username="u", user_id="1", wiki_id="w",
+        api_url=None, allowed_namespaces=[0],
+    )
+
+    out = await tool_find_pages_by_title(
+        prefix="Test", user=user, namespace=0, limit=50, client=fake_client,
+    )
+
+    titles = [r["title"] for r in out["results"]]
+    assert "Test1" in titles
+    assert "Test678" in titles
+    assert "Test_Hidden" not in titles
+    assert out["count"] == 2
+    assert out["truncated"] is False
+    assert out["prefix"] == "Test"
+
+
+@pytest.mark.asyncio
 async def test_categories_prefix_mode_includes_truncation_metadata():
     """Existing prefix-mode `matches`/`suggestions` shape stays, plus
     truncation fields on top."""

@@ -200,3 +200,55 @@ async def tool_search_pages(
     client = client or mw_client
     rows = await client.search_pages(query, limit=limit, user=user)
     return paginated(rows, limit=limit)
+
+
+# ---------------------------------------------------------------------
+# Authoritative Title-Prefix Search
+# ---------------------------------------------------------------------
+
+async def tool_find_pages_by_title(
+    prefix: str,
+    user: UserContext,
+    namespace: int = 0,
+    limit: int = 50,
+    client: Optional[MediaWikiClient] = None,
+) -> Dict[str, Any]:
+    """
+    Find pages whose title starts with ``prefix``, hitting the MW page table
+    directly via ``list=allpages``. Use this — not ``mw_search_pages`` — for
+    'find pages by title' questions; the page table is authoritative even
+    when the fulltext search index is stale.
+
+    Permission gate: requires ``namespace`` to be in the user's allowed list.
+    Each result is filtered through ``check_read_access`` so per-page
+    restrictions (Lockdown, ControlAccess) are honoured.
+    """
+    if not prefix:
+        raise ValueError("mw_find_pages_by_title requires a non-empty 'prefix'.")
+
+    if user.allowed_namespaces and namespace not in user.allowed_namespaces:
+        raise PermissionError(
+            f"User '{user.username}' does not have access to namespace {namespace}"
+        )
+
+    client = client or mw_client
+    rows = await client.find_pages_by_title_prefix(
+        prefix=prefix, namespace=namespace, limit=limit, user=user,
+    )
+
+    if rows:
+        titles = [r.get("title", "") for r in rows if r.get("title")]
+        if titles:
+            access_map = await client.check_read_access(titles, user)
+            rows = [r for r in rows if access_map.get(r.get("title", ""), False)]
+
+    cleaned = [
+        {"title": r["title"], "ns": r.get("ns", namespace)}
+        for r in rows
+        if r.get("title")
+    ]
+    return paginated(
+        cleaned,
+        limit=limit,
+        extra={"prefix": prefix, "namespace": namespace},
+    )
