@@ -591,24 +591,32 @@ class MediaWikiClient:
         user: Optional["UserContext"] = None,
     ) -> List[Dict[str, Any]]:
         """
-        List pages whose title starts with ``prefix`` via ``list=allpages``.
+        List pages whose title starts with ``prefix`` via the permission-aware
+        ``mwassistant-find-pages-by-title`` API module.
 
-        Authoritative against the page table (no fulltext-search index lag),
-        so it picks up newly created pages immediately. Each row is
-        ``{title, ns, pageid}``.
+        We use the custom module instead of stock ``list=allpages`` because the
+        latter is gated by MediaWiki's anonymous-read check on private wikis,
+        which fires before any of our auth runs.
+
+        Returns rows shaped ``{title, ns, pageid}``, already filtered through
+        the user's read permissions.
         """
         if not prefix:
             raise ValueError("find_pages_by_title_prefix requires a non-empty prefix.")
 
         params: Dict[str, Any] = {
-            "action": "query",
-            "list": "allpages",
-            "apprefix": prefix,
-            "apnamespace": namespace,
-            "aplimit": min(max(limit, 1), 500),
+            "action": "mwassistant-find-pages-by-title",
+            "prefix": prefix,
+            "namespace": namespace,
+            "limit": min(max(limit, 1), 500),
             "format": "json",
             "formatversion": 2,
         }
+        if user is not None:
+            if user.username:
+                params["username"] = user.username
+            if user.user_id:
+                params["user_id"] = user.user_id
 
         target_api = user.api_url if user else api_url
         target_wiki = user.wiki_id if user else wiki_id
@@ -616,10 +624,7 @@ class MediaWikiClient:
             params, scopes=["page_read"], api_url=target_api, wiki_id=target_wiki,
         )
 
-        try:
-            return data["query"]["allpages"]
-        except KeyError:
-            return []
+        return data.get("mwassistant-find-pages-by-title", {}).get("pages", [])
 
     async def search_pages(
         self, query: str, limit: int = 10, user: Optional[UserContext] = None
