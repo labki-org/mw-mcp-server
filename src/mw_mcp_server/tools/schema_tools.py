@@ -152,12 +152,21 @@ async def _list_namespace_with_suggestions(
             exclude=set(matches),
         )
 
-    return paginated(
-        matches,
-        limit=limit,
-        label="matches",
-        extra={"suggestions": suggestions},
-    )
+    extra: Dict[str, Any] = {"suggestions": suggestions}
+
+    # Distinguish "namespace hasn't been indexed" from "prefix didn't match
+    # anything" — the LLM can't tell from a bare empty list, but the user
+    # cares about the difference (admin needs to run a batch embed).
+    if not raw_matches and not prefix:
+        extra["note"] = (
+            f"The embedding index contains 0 pages in the {namespace_label} namespace. "
+            "This usually means those pages haven't been embedded yet, NOT that the wiki "
+            "has none — ask the wiki admin to run a batch embed for this namespace from "
+            "Special:MWAssistantEmbeddings. To find pages by keyword regardless of the "
+            "embedding index, use `mw_search_pages`."
+        )
+
+    return paginated(matches, limit=limit, label="matches", extra=extra)
 
 
 async def tool_get_categories(
@@ -229,17 +238,48 @@ async def tool_list_pages(
     """
     # Deny if user has no namespace access at all
     if allowed_namespaces is not None and not allowed_namespaces:
-        return paginated([], limit=limit)
+        return paginated(
+            [],
+            limit=limit,
+            extra={"note": "User has no readable namespaces — nothing to list."},
+        )
 
     # Deny if the requested namespace is not in user's allowed list
-    if allowed_namespaces is not None and namespace is not None:
-        if namespace not in allowed_namespaces:
-            return paginated([], limit=limit)
+    if (
+        allowed_namespaces is not None
+        and namespace is not None
+        and namespace not in allowed_namespaces
+    ):
+        return paginated(
+            [],
+            limit=limit,
+            extra={
+                "note": (
+                    f"Namespace {namespace} is not accessible. "
+                    f"Allowed namespace IDs: {sorted(allowed_namespaces)}."
+                ),
+            },
+        )
 
-    # When namespace is None (all namespaces) but user has restrictions,
-    # deny the broad query to prevent leaking pages from restricted namespaces.
+    # Cross-namespace listing isn't supported for restricted users (we'd risk
+    # leaking pages from namespaces they can't read). Instead of returning a
+    # silent empty list — which the LLM tends to read as 'wiki is empty' —
+    # tell it which namespaces ARE accessible so it can call us again with
+    # one of them.
     if allowed_namespaces is not None and namespace is None:
-        return paginated([], limit=limit)
+        return paginated(
+            [],
+            limit=limit,
+            extra={
+                "note": (
+                    "Cross-namespace listing requires an explicit `namespace` argument. "
+                    f"Re-run with one of: {sorted(allowed_namespaces)}. "
+                    "Common IDs: 0=Main (article pages), 14=Category, 102=Property, "
+                    "10=Template, 12=Help, 4=Project. Use `mw_vector_search` for "
+                    "open-ended 'what's on this wiki' queries."
+                ),
+            },
+        )
 
     results = await vector_store.get_pages_by_namespace(wiki_id, namespace, pattern=prefix)
     return paginated(results[:limit], limit=limit)
