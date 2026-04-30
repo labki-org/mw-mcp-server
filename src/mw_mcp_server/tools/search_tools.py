@@ -25,6 +25,7 @@ from ..embeddings.embedder import Embedder
 from ..db import VectorStore
 from ..auth.models import UserContext
 from ..api.models import ToolSearchResult
+from .pagination import paginated
 
 logger = logging.getLogger("mcp.search")
 
@@ -79,7 +80,7 @@ async def validate_page_access(
 # Main Search Tool
 # ---------------------------------------------------------------------
 
-async def tool_vector_search(
+async def vector_search(
     query: str,
     user: UserContext,
     vector_store: VectorStore,
@@ -88,56 +89,22 @@ async def tool_vector_search(
     client: Optional[MediaWikiClient] = None,
 ) -> List[ToolSearchResult]:
     """
-    Semantic vector search tool callable by the LLM.
+    Run a permission-filtered vector search and return the raw result list.
 
-    Permission Filtering Pipeline:
-    1. Over-query pgvector (request 3x results with namespace filter)
-    2. Validate top results via MediaWiki API callback
-    3. Return only accessible pages (up to k results)
-
-    Parameters
-    ----------
-    query : str
-        User query string.
-
-    user : UserContext
-        Authenticated MediaWiki user context.
-
-    vector_store : VectorStore
-        PostgreSQL + pgvector based vector store.
-
-    embedder : Embedder
-        Embedder capable of producing dense embeddings.
-
-    k : int
-        Maximum number of results to return.
-
-    client : MediaWikiClient
-        Optional client override for testing.
-
-    Returns
-    -------
-    List[ToolSearchResult]
-        Filtered, ranked results with text snippets.
+    This is the lower-level building block used by both the HTTP search
+    route and the LLM tool wrapper. The LLM-facing wrapper (``tool_vector_search``)
+    adds truncation metadata; the HTTP route uses the bare list.
     """
-    # -------------------------------------------------------------
     # Early deny: empty allowed_namespaces means no access
-    # -------------------------------------------------------------
     if not user.allowed_namespaces:
         return []
 
-    # -------------------------------------------------------------
-    # Embed the query text
-    # -------------------------------------------------------------
     embeddings = await embedder.embed([query])
     if not embeddings:
         return []
 
     q_emb = embeddings[0]
 
-    # -------------------------------------------------------------
-    # Search with namespace pre-filtering
-    # -------------------------------------------------------------
     try:
         raw_results = await vector_store.search(
             wiki_id=user.wiki_id,
@@ -152,11 +119,8 @@ async def tool_vector_search(
     if not raw_results:
         return []
 
-    # -------------------------------------------------------------
-    # Validate page access via API callback (top candidates)
-    # -------------------------------------------------------------
     candidates = raw_results[:k * PERMISSION_CHECK_MULTIPLIER]
-    titles_to_check = list(set(title for title, _, _, _ in candidates))
+    titles_to_check = list({title for title, _, _, _ in candidates})
 
     try:
         access_map = await validate_page_access(titles_to_check, user, client)
@@ -166,17 +130,12 @@ async def tool_vector_search(
             f"Permission validation failed during vector search: {type(exc).__name__}: {exc}"
         ) from exc
 
-    # -------------------------------------------------------------
-    # Filter to accessible pages and convert to API result objects
-    # -------------------------------------------------------------
     results: List[ToolSearchResult] = []
-    seen_titles = set()
+    seen_titles: set = set()
 
     for title, section_id, namespace, score in candidates:
         if not access_map.get(title, False):
             continue
-
-        # Deduplicate by title (keep highest score)
         if title in seen_titles:
             continue
         seen_titles.add(title)
@@ -189,11 +148,37 @@ async def tool_vector_search(
             )
         )
 
-        # Stop once we have enough results
         if len(results) >= k:
             break
 
     return results
+
+
+async def tool_vector_search(
+    query: str,
+    user: UserContext,
+    vector_store: VectorStore,
+    embedder: Embedder,
+    k: int = 5,
+    client: Optional[MediaWikiClient] = None,
+) -> Dict[str, Any]:
+    """
+    LLM-facing semantic vector search tool.
+
+    Wraps :func:`vector_search` with truncation metadata so the LLM can
+    detect when ``k`` capped the result and decide whether to widen it.
+    Returns ``{results, count, limit, truncated, note}`` where each item
+    is a ``ToolSearchResult``-shaped dict.
+    """
+    results = await vector_search(
+        query=query,
+        user=user,
+        vector_store=vector_store,
+        embedder=embedder,
+        k=k,
+        client=client,
+    )
+    return paginated([r.model_dump() for r in results], limit=k)
 
 
 # ---------------------------------------------------------------------
@@ -205,25 +190,65 @@ async def tool_search_pages(
     limit: int = 10,
     client: Optional[MediaWikiClient] = None,
     user: Optional[UserContext] = None,
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
     Perform a standard MediaWiki keyword search/list=search.
 
-    Parameters
-    ----------
-    query : str
-        Keyword search query.
-    
-    limit : int
-        Max results.
-
-    client : MediaWikiClient
-        Optional client override.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        List of search results with keys: title, snippet, size, wordcount, etc.
+    Returns a paginated wrapper ``{results, count, limit, truncated, note}``;
+    each result is the raw MW search-result dict (title/snippet/size/etc.).
     """
     client = client or mw_client
-    return await client.search_pages(query, limit=limit, user=user)
+    rows = await client.search_pages(query, limit=limit, user=user)
+    return paginated(rows, limit=limit)
+
+
+# ---------------------------------------------------------------------
+# Authoritative Title-Prefix Search
+# ---------------------------------------------------------------------
+
+async def tool_find_pages_by_title(
+    prefix: str,
+    user: UserContext,
+    namespace: int = 0,
+    limit: int = 50,
+    client: Optional[MediaWikiClient] = None,
+) -> Dict[str, Any]:
+    """
+    Find pages whose title starts with ``prefix``, hitting the MW page table
+    directly via ``list=allpages``. Use this — not ``mw_search_pages`` — for
+    'find pages by title' questions; the page table is authoritative even
+    when the fulltext search index is stale.
+
+    Permission gate: requires ``namespace`` to be in the user's allowed list.
+    Each result is filtered through ``check_read_access`` so per-page
+    restrictions (Lockdown, ControlAccess) are honoured.
+    """
+    if not prefix:
+        raise ValueError("mw_find_pages_by_title requires a non-empty 'prefix'.")
+
+    if user.allowed_namespaces and namespace not in user.allowed_namespaces:
+        raise PermissionError(
+            f"User '{user.username}' does not have access to namespace {namespace}"
+        )
+
+    client = client or mw_client
+    rows = await client.find_pages_by_title_prefix(
+        prefix=prefix, namespace=namespace, limit=limit, user=user,
+    )
+
+    if rows:
+        titles = [r.get("title", "") for r in rows if r.get("title")]
+        if titles:
+            access_map = await client.check_read_access(titles, user)
+            rows = [r for r in rows if access_map.get(r.get("title", ""), False)]
+
+    cleaned = [
+        {"title": r["title"], "ns": r.get("ns", namespace)}
+        for r in rows
+        if r.get("title")
+    ]
+    return paginated(
+        cleaned,
+        limit=limit,
+        extra={"prefix": prefix, "namespace": namespace},
+    )

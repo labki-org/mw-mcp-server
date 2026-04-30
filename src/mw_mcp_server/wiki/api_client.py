@@ -581,6 +581,51 @@ class MediaWikiClient:
 
         return titles
 
+    async def find_pages_by_title_prefix(
+        self,
+        prefix: str,
+        namespace: int = 0,
+        limit: int = 50,
+        api_url: Optional[str] = None,
+        wiki_id: Optional[str] = None,
+        user: Optional["UserContext"] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List pages whose title starts with ``prefix`` via the permission-aware
+        ``mwassistant-find-pages-by-title`` API module.
+
+        We use the custom module instead of stock ``list=allpages`` because the
+        latter is gated by MediaWiki's anonymous-read check on private wikis,
+        which fires before any of our auth runs.
+
+        Returns rows shaped ``{title, ns, pageid}``, already filtered through
+        the user's read permissions.
+        """
+        if not prefix:
+            raise ValueError("find_pages_by_title_prefix requires a non-empty prefix.")
+
+        params: Dict[str, Any] = {
+            "action": "mwassistant-find-pages-by-title",
+            "prefix": prefix,
+            "namespace": namespace,
+            "limit": min(max(limit, 1), 500),
+            "format": "json",
+            "formatversion": 2,
+        }
+        if user is not None:
+            if user.username:
+                params["username"] = user.username
+            if user.user_id:
+                params["user_id"] = user.user_id
+
+        target_api = user.api_url if user else api_url
+        target_wiki = user.wiki_id if user else wiki_id
+        data = await self.request(
+            params, scopes=["page_read"], api_url=target_api, wiki_id=target_wiki,
+        )
+
+        return data.get("mwassistant-find-pages-by-title", {}).get("pages", [])
+
     async def search_pages(
         self, query: str, limit: int = 10, user: Optional[UserContext] = None
     ) -> List[Dict[str, Any]]:

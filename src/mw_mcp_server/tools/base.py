@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any, Dict, Callable, Awaitable, Optional
 
 from .wiki_tools import tool_get_page, tool_run_smw_ask, tool_page_info, tool_get_category_members
-from .search_tools import tool_vector_search, tool_search_pages
+from .search_tools import tool_vector_search, tool_search_pages, tool_find_pages_by_title
 from .schema_tools import tool_get_categories, tool_get_properties, tool_list_pages
 from ..auth.models import UserContext
 from ..embeddings.embedder import Embedder
@@ -149,12 +149,19 @@ async def _handle_list_pages(
     raw_ns = args.get("namespace")
     ns_id: Optional[int] = None
 
+    # Sentinel strings the LLM reaches for when it means 'no namespace filter'
+    # — without these, "All" falls through to a literal `All:` prefix search.
+    _ALL_NAMESPACE_TOKENS = {"all", "any", "*", ""}
+
     if raw_ns is not None:
         # Try as integer first
         if isinstance(raw_ns, int):
             ns_id = raw_ns
         elif isinstance(raw_ns, str):
-            if raw_ns.isdigit():
+            normalized = raw_ns.lower().strip()
+            if normalized in _ALL_NAMESPACE_TOKENS:
+                ns_id = None  # treat as "no filter"
+            elif raw_ns.isdigit():
                 ns_id = int(raw_ns)
             else:
                 # Map common names to IDs (case-insensitive)
@@ -170,7 +177,6 @@ async def _handle_list_pages(
                     "category": 14,
                     "property": 102,
                 }
-                normalized = raw_ns.lower().strip()
                 if normalized in mapping:
                     ns_id = mapping[normalized]
                 else:
@@ -221,12 +227,30 @@ async def _handle_get_category_members(
     return await tool_get_category_members(category, user, limit=limit)
 
 
+async def _handle_find_pages_by_title(
+    args: Dict[str, Any],
+    user: UserContext,
+    vector_store: VectorStore,
+    embedder: Embedder,
+) -> Any:
+    prefix = args.get("prefix")
+    if not prefix:
+        raise ValueError("mw_find_pages_by_title requires 'prefix' argument.")
+    return await tool_find_pages_by_title(
+        prefix=prefix,
+        user=user,
+        namespace=int(args.get("namespace", 0)),
+        limit=int(args.get("limit", 50)),
+    )
+
+
 TOOL_REGISTRY: Dict[str, ToolHandler] = {
     "mw_get_page": _handle_get_page,
     "mw_page_info": _handle_page_info,
     "mw_run_smw_ask": _handle_smw_ask,
     "mw_vector_search": _handle_vector_search,
     "mw_search_pages": _handle_search_pages,
+    "mw_find_pages_by_title": _handle_find_pages_by_title,
     "mw_get_categories": _handle_get_categories,
     "mw_get_properties": _handle_get_properties,
     "mw_list_pages": _handle_list_pages,

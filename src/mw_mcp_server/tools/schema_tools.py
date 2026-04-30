@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from ..db import VectorStore
 from ..embeddings.embedder import Embedder
+from .pagination import paginated
 
 # MediaWiki Constants
 NS_CATEGORY = 14
@@ -94,11 +95,15 @@ async def _list_namespace_with_suggestions(
 
     # Permission gate: pretend the namespace is empty if user can't read it.
     if allowed_namespaces is not None and namespace not in allowed_namespaces:
-        return {
-            "matches": [],
-            "suggestions": [],
-            "note": f"{namespace_label} namespace is not accessible to this user.",
-        }
+        return paginated(
+            [],
+            limit=limit,
+            label="matches",
+            extra={
+                "suggestions": [],
+                "note": f"{namespace_label} namespace is not accessible to this user.",
+            },
+        )
 
     # ---- Names mode: existence check with semantic suggestions for misses ----
     if names:
@@ -147,7 +152,21 @@ async def _list_namespace_with_suggestions(
             exclude=set(matches),
         )
 
-    return {"matches": matches, "suggestions": suggestions}
+    extra: Dict[str, Any] = {"suggestions": suggestions}
+
+    # Distinguish "namespace hasn't been indexed" from "prefix didn't match
+    # anything" — the LLM can't tell from a bare empty list, but the user
+    # cares about the difference (admin needs to run a batch embed).
+    if not raw_matches and not prefix:
+        extra["note"] = (
+            f"The embedding index contains 0 pages in the {namespace_label} namespace. "
+            "This usually means those pages haven't been embedded yet, NOT that the wiki "
+            "has none — ask the wiki admin to run a batch embed for this namespace from "
+            "Special:MWAssistantEmbeddings. To find pages by keyword regardless of the "
+            "embedding index, use `mw_search_pages`."
+        )
+
+    return paginated(matches, limit=limit, label="matches", extra=extra)
 
 
 async def tool_get_categories(
@@ -211,23 +230,64 @@ async def tool_list_pages(
     limit: int = 50,
     allowed_namespaces: Optional[List[int]] = None,
     **kwargs: Any,
-) -> List[str]:
+) -> Dict[str, Any]:
     """
     Retrieve existing pages from the index for a given namespace.
+
+    Returns a paginated wrapper ``{results, count, limit, truncated, note}``.
     """
     # Deny if user has no namespace access at all
     if allowed_namespaces is not None and not allowed_namespaces:
-        return []
+        return paginated(
+            [],
+            limit=limit,
+            extra={"note": "User has no readable namespaces — nothing to list."},
+        )
 
     # Deny if the requested namespace is not in user's allowed list
-    if allowed_namespaces is not None and namespace is not None:
-        if namespace not in allowed_namespaces:
-            return []
+    if (
+        allowed_namespaces is not None
+        and namespace is not None
+        and namespace not in allowed_namespaces
+    ):
+        return paginated(
+            [],
+            limit=limit,
+            extra={
+                "note": (
+                    f"Namespace {namespace} is not accessible. "
+                    f"Allowed namespace IDs: {sorted(allowed_namespaces)}."
+                ),
+            },
+        )
 
-    # When namespace is None (all namespaces) but user has restrictions,
-    # deny the broad query to prevent leaking pages from restricted namespaces.
+    # Cross-namespace listing for a restricted user: aggregate over the
+    # namespaces they CAN read instead of either denying outright (which
+    # the LLM reads as 'wiki is empty') or letting the underlying call
+    # leak pages from namespaces they can't read.
     if allowed_namespaces is not None and namespace is None:
-        return []
+        aggregated: List[str] = []
+        per_ns_indexed = 0
+        for ns in sorted(allowed_namespaces):
+            if len(aggregated) >= limit:
+                break
+            rows = await vector_store.get_pages_by_namespace(
+                wiki_id, ns, pattern=prefix
+            )
+            per_ns_indexed += len(rows)
+            remaining = limit - len(aggregated)
+            aggregated.extend(rows[:remaining])
+
+        extra: Dict[str, Any] = {}
+        if per_ns_indexed == 0 and not prefix:
+            extra["note"] = (
+                "The embedding index has 0 pages across this user's accessible "
+                f"namespaces ({sorted(allowed_namespaces)}). This usually means "
+                "pages haven't been embedded yet — ask the wiki admin to run a "
+                "batch embed at Special:MWAssistantEmbeddings, or use "
+                "`mw_search_pages` to find pages by keyword regardless of indexing."
+            )
+        return paginated(aggregated, limit=limit, extra=extra)
 
     results = await vector_store.get_pages_by_namespace(wiki_id, namespace, pattern=prefix)
-    return results[:limit]
+    return paginated(results[:limit], limit=limit)
