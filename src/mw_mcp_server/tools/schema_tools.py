@@ -261,25 +261,33 @@ async def tool_list_pages(
             },
         )
 
-    # Cross-namespace listing isn't supported for restricted users (we'd risk
-    # leaking pages from namespaces they can't read). Instead of returning a
-    # silent empty list — which the LLM tends to read as 'wiki is empty' —
-    # tell it which namespaces ARE accessible so it can call us again with
-    # one of them.
+    # Cross-namespace listing for a restricted user: aggregate over the
+    # namespaces they CAN read instead of either denying outright (which
+    # the LLM reads as 'wiki is empty') or letting the underlying call
+    # leak pages from namespaces they can't read.
     if allowed_namespaces is not None and namespace is None:
-        return paginated(
-            [],
-            limit=limit,
-            extra={
-                "note": (
-                    "Cross-namespace listing requires an explicit `namespace` argument. "
-                    f"Re-run with one of: {sorted(allowed_namespaces)}. "
-                    "Common IDs: 0=Main (article pages), 14=Category, 102=Property, "
-                    "10=Template, 12=Help, 4=Project. Use `mw_vector_search` for "
-                    "open-ended 'what's on this wiki' queries."
-                ),
-            },
-        )
+        aggregated: List[str] = []
+        per_ns_indexed = 0
+        for ns in sorted(allowed_namespaces):
+            if len(aggregated) >= limit:
+                break
+            rows = await vector_store.get_pages_by_namespace(
+                wiki_id, ns, pattern=prefix
+            )
+            per_ns_indexed += len(rows)
+            remaining = limit - len(aggregated)
+            aggregated.extend(rows[:remaining])
+
+        extra: Dict[str, Any] = {}
+        if per_ns_indexed == 0 and not prefix:
+            extra["note"] = (
+                "The embedding index has 0 pages across this user's accessible "
+                f"namespaces ({sorted(allowed_namespaces)}). This usually means "
+                "pages haven't been embedded yet — ask the wiki admin to run a "
+                "batch embed at Special:MWAssistantEmbeddings, or use "
+                "`mw_search_pages` to find pages by keyword regardless of indexing."
+            )
+        return paginated(aggregated, limit=limit, extra=extra)
 
     results = await vector_store.get_pages_by_namespace(wiki_id, namespace, pattern=prefix)
     return paginated(results[:limit], limit=limit)

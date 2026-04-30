@@ -149,12 +149,19 @@ async def _handle_list_pages(
     raw_ns = args.get("namespace")
     ns_id: Optional[int] = None
 
+    # Sentinel strings the LLM reaches for when it means 'no namespace filter'
+    # — without these, "All" falls through to a literal `All:` prefix search.
+    _ALL_NAMESPACE_TOKENS = {"all", "any", "*", ""}
+
     if raw_ns is not None:
         # Try as integer first
         if isinstance(raw_ns, int):
             ns_id = raw_ns
         elif isinstance(raw_ns, str):
-            if raw_ns.isdigit():
+            normalized = raw_ns.lower().strip()
+            if normalized in _ALL_NAMESPACE_TOKENS:
+                ns_id = None  # treat as "no filter"
+            elif raw_ns.isdigit():
                 ns_id = int(raw_ns)
             else:
                 # Map common names to IDs (case-insensitive)
@@ -170,7 +177,6 @@ async def _handle_list_pages(
                     "category": 14,
                     "property": 102,
                 }
-                normalized = raw_ns.lower().strip()
                 if normalized in mapping:
                     ns_id = mapping[normalized]
                 else:
