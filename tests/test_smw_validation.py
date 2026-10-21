@@ -433,9 +433,10 @@ class TestSmwAskResultShape:
             "[[Category:City]]|?Population|?Located in", user, client=smw,
         ))["mwassistant-smw"]
         assert out["rows"] == [
-            {"title": "Berlin", "Population": "3500000", "Located in": ["Germany", "EU"]},
-            {"title": "Nowhere", "Population": [], "Located in": []},
+            {"title": "Berlin", "printouts": {"Population": ["3500000"], "Located in": ["Germany", "EU"]}},
+            {"title": "Nowhere", "printouts": {"Population": [], "Located in": []}},
         ]
+        assert "result" not in out
         assert out["printouts"] == ["Population", "Located in"]
         assert out["count"] == 2
         assert out["truncated"] is False

@@ -425,24 +425,20 @@ def _compact_smw_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """
     Reduce the mwassistant-smw result to what the LLM needs.
 
-    Rows become ``{"title": ..., <label>: value-or-list}`` (a single value
-    is unwrapped), and the HTML rendering is dropped.
+    Rows keep the wiki's ``{"title": ..., "printouts": {<label>: [values]}}``
+    shape, which the MWAssistant chat UI renders as a linked table; only the
+    HTML rendering is dropped.
     """
     printouts = [p for p in result.get("printouts") or [] if isinstance(p, str)]
     rows: List[Dict[str, Any]] = []
     for raw in result.get("rows") or []:
         if not isinstance(raw, dict):
             continue
-        row: Dict[str, Any] = {"title": raw.get("title")}
-        values_by_label = raw.get("printouts") or {}
-        if isinstance(values_by_label, dict):
-            for label, values in values_by_label.items():
-                key = label if label != "title" else "title (printout)"
-                if isinstance(values, list):
-                    row[key] = values[0] if len(values) == 1 else values
-                else:
-                    row[key] = values
-        rows.append(row)
+        values_by_label = raw.get("printouts")
+        rows.append({
+            "title": raw.get("title"),
+            "printouts": values_by_label if isinstance(values_by_label, dict) else {},
+        })
 
     has_more = bool(result.get("has_more"))
     compact: Dict[str, Any] = {
@@ -493,7 +489,7 @@ async def tool_run_smw_ask(
     -------
     Dict[str, Any]
         ``{"mwassistant-smw": {rows, printouts, count, truncated, errors[, note]}}``
-        where each row is ``{"title": ..., <printout label>: value-or-list}``.
+        where each row is ``{"title": ..., "printouts": {<label>: [values]}}``.
     """
     if not ask_query:
         raise ValueError("mw_run_smw_ask requires a non-empty 'ask' argument.")
