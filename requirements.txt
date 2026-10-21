@@ -1,8 +1,19 @@
+# Production runtime dependencies (installed into the Docker image).
+# Keep in sync with [project.dependencies] in pyproject.toml.
+# The image installs the fully pinned, hash-checked requirements.lock;
+# regenerate it after editing this file:
+#   uv pip compile requirements.txt --universal --python-version 3.11 \
+#     --generate-hashes -o requirements.lock
+# Test/dev tooling lives in requirements-dev.txt.
+
 ########################################
 # Core Web Framework
 ########################################
-fastapi>=0.115.0,<1.0.0
-uvicorn[standard]>=0.29.0,<1.0.0
+fastapi>=0.120.1,<1.0.0
+# Explicit floors for transitive deps with advisories:
+starlette>=0.49.1          # CVE-2025-54121, CVE-2025-62727 (Range DoS)
+uvicorn[standard]>=0.30.0,<1.0.0
+h11>=0.16.0                # CVE-2025-43859
 
 ########################################
 # Configuration & Validation (Pydantic v2)
@@ -18,13 +29,13 @@ httpx>=0.27.0,<1.0.0
 ########################################
 # Text Processing
 ########################################
-langchain-text-splitters>=0.2.0,<1.0.0
+langchain-text-splitters>=1.1.2,<2.0.0   # CVE-2025-6985, CVE-2026-41481
 tiktoken>=0.7.0,<1.0.0
 
 ########################################
 # Auth / JWT
 ########################################
-PyJWT>=2.8.0,<3.0.0
+PyJWT>=2.12.0,<3.0.0       # CVE-2024-53861, crit header handling
 
 ########################################
 # Database (PostgreSQL + pgvector)
@@ -33,10 +44,3 @@ sqlalchemy[asyncio]>=2.0.0,<3.0.0
 asyncpg>=0.29.0,<1.0.0
 pgvector>=0.3.0,<1.0.0
 alembic>=1.13.0,<2.0.0
-
-########################################
-# Testing
-########################################
-pytest>=8.0.0,<9.0.0
-pytest-asyncio>=0.23.0,<1.0.0
-respx>=0.21.0,<1.0.0
