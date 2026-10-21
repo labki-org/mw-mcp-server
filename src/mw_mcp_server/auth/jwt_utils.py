@@ -10,15 +10,23 @@ Key characteristics:
 - Scoped
 - Signed with a dedicated MCP→MW secret
 - Includes explicit issuer/audience claims
+- Bound to the target wiki (``wiki_id``) and, when acting for a user, to that
+  user (``user`` / ``user_id``), so MWAssistant can reject requests whose
+  username/user_id params do not match the signed identity
+- Carries a unique ``jti``
 """
 
 from __future__ import annotations
 
 import jwt
 import time
-from typing import List, Dict, Any, Optional
+import uuid
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
 from ..config import settings
+
+if TYPE_CHECKING:
+    from .models import UserContext
 
 
 # ---------------------------------------------------------------------
@@ -58,7 +66,11 @@ def _validate_jwt_config() -> None:
 # Public API
 # ---------------------------------------------------------------------
 
-def create_mcp_to_mw_jwt(scopes: List[str], wiki_id: Optional[str] = None) -> str:
+def create_mcp_to_mw_jwt(
+    scopes: List[str],
+    wiki_id: Optional[str] = None,
+    user: Optional["UserContext"] = None,
+) -> str:
     """
     Generate a short-lived JWT for MCP → MediaWiki communication.
 
@@ -69,7 +81,13 @@ def create_mcp_to_mw_jwt(scopes: List[str], wiki_id: Optional[str] = None) -> st
         
     wiki_id : Optional[str]
         ID of the target wiki. If provided, uses the specific secret for that wiki.
-        If None, falls back to the global legacy secret.
+        Always included as the ``wiki_id`` claim.
+
+    user : Optional[UserContext]
+        Authenticated user the request is made on behalf of. When given, the
+        token carries signed ``user`` and ``user_id`` claims, which
+        MWAssistant uses as the acting identity. Omit for system calls
+        (e.g. embedding jobs) that do not act for a user.
 
     Returns
     -------
@@ -92,11 +110,25 @@ def create_mcp_to_mw_jwt(scopes: List[str], wiki_id: Optional[str] = None) -> st
         "iat": now,                    # Issued at
         "exp": now + settings.jwt_ttl_seconds, # Short TTL for safety
         "scope": scopes,               # Scope-based capabilities
-        # NOTE: Additional claims like jti could be added for replay protection
+        "jti": uuid.uuid4().hex,       # Unique token ID
     }
-    
+    if wiki_id:
+        payload["wiki_id"] = wiki_id
+
+    if user is not None:
+        # MWAssistant treats user_id 0 as anonymous and otherwise requires
+        # the name and id to resolve to the same account.
+        payload["user_id"] = int(user.user_id)
+        if user.user_id and user.username:
+            payload["user"] = user.username
+
     # Select signing secret
     secret = None
+    if user is not None and wiki_id and user.wiki_id != wiki_id:
+        raise JWTConfigurationError(
+            "Refusing to sign a token for a user of a different wiki."
+        )
+
     if wiki_id and wiki_id in settings.wiki_creds:
         secret = settings.wiki_creds[wiki_id].mcp_to_mw_secret.get_secret_value()
         

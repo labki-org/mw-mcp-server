@@ -19,15 +19,35 @@ Design Principles
 from __future__ import annotations
 
 from typing import Dict, Literal, Optional
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class WikiCredentials(BaseModel):
-    """Credentials for a specific MediaWiki instance."""
+    """Credentials (and optional pinned API URL) for a specific MediaWiki instance."""
     mw_to_mcp_secret: SecretStr
     mcp_to_mw_secret: SecretStr
+    api_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "MediaWiki api.php URL for this wiki. When set, the server always "
+            "calls this URL and rejects user tokens whose 'api_url' claim "
+            "differs. When unset, the URL from the token is used (legacy)."
+        ),
+    )
+
+    @field_validator("api_url")
+    @classmethod
+    def _validate_api_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("api_url must be an absolute http(s) URL.")
+        return v
 
 
 class Settings(BaseSettings):
