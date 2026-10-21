@@ -16,7 +16,15 @@ Design Goals
 from __future__ import annotations
 
 from typing import List, Optional, Dict, Any, Literal
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+
+# Upper bounds on client-supplied text.
+MAX_CHAT_MESSAGE_CHARS = 100_000
+MAX_CHAT_REQUEST_CHARS = 200_000
+# MediaWiki's default $wgMaxArticleSize is 2048 KiB; a page's wikitext
+# cannot have more characters than bytes.
+MAX_EMBEDDING_CONTENT_CHARS = 2048 * 1024
+MAX_PAGE_TITLE_CHARS = 512
 
 
 # ---------------------------------------------------------------------
@@ -56,12 +64,22 @@ class OperationResult(BaseModel):
 
 class ChatMessage(BaseModel):
     """
-    Single message in a chat conversation.
+    Single client-supplied message in a chat conversation.
+
+    Only "user" and "assistant" roles are accepted, so a client cannot
+    inject system or tool messages into the LLM context. MWAssistant sends
+    editor context as a "system" message ("Context:\n..."); for wire
+    compatibility that is accepted but downgraded to a "user" message.
     """
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str = Field(..., min_length=1, max_length=100_000)
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=MAX_CHAT_MESSAGE_CHARS)
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _downgrade_system_role(cls, v: Any) -> Any:
+        return "user" if v == "system" else v
 
 
 class ChatRequest(BaseModel):
@@ -75,6 +93,15 @@ class ChatRequest(BaseModel):
     context: Literal["chat", "editor"] = "chat"
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _cap_total_chars(self) -> "ChatRequest":
+        total = sum(len(m.content) for m in self.messages)
+        if total > MAX_CHAT_REQUEST_CHARS:
+            raise ValueError(
+                f"Total message content exceeds {MAX_CHAT_REQUEST_CHARS} characters."
+            )
+        return self
 
 
 class ChatResponse(BaseModel):
@@ -143,8 +170,8 @@ class EmbeddingUpdatePageRequest(BaseModel):
     """
     Request to (re)index a wiki page for embedding search.
     """
-    title: str = Field(..., min_length=1)
-    content: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=1, max_length=MAX_PAGE_TITLE_CHARS)
+    content: str = Field(..., min_length=1, max_length=MAX_EMBEDDING_CONTENT_CHARS)
     namespace: int = Field(default=0, ge=0)
     last_modified: Optional[str] = None
     rev_id: Optional[int] = Field(
@@ -160,7 +187,7 @@ class EmbeddingDeletePageRequest(BaseModel):
     """
     Request to delete all embeddings for a given page.
     """
-    title: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=1, max_length=MAX_PAGE_TITLE_CHARS)
 
     model_config = ConfigDict(extra="forbid")
 
