@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -146,6 +147,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 # Application Factory (Test-Friendly)
 # ---------------------------------------------------------------------
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _api_docs_enabled() -> bool:
+    """
+    Whether to serve /docs, /redoc and /openapi.json.
+
+    Off by default so production deployments don't publish the full API
+    surface. Enable with ENABLE_API_DOCS=true (a Settings field named
+    ``enable_api_docs`` is honoured too, if one is added to config).
+    """
+    configured = getattr(settings, "enable_api_docs", None)
+    if isinstance(configured, bool):
+        return configured
+    return os.environ.get("ENABLE_API_DOCS", "").strip().lower() in _TRUTHY
+
+
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -160,12 +178,14 @@ def create_app() -> FastAPI:
     FastAPI
         Fully configured FastAPI application.
     """
+    docs_enabled = _api_docs_enabled()
+
     app = FastAPI(
         title="mw-mcp-server",
         version="0.1.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
         lifespan=lifespan,
     )
 
