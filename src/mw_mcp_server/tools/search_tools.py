@@ -236,6 +236,9 @@ async def tool_find_pages_by_title(
         prefix=prefix, namespace=namespace, limit=limit, user=user,
     )
 
+    # Decide truncation from the capped fetch, before access filtering.
+    hit_limit = len(rows) >= limit
+
     if rows:
         titles = [r.get("title", "") for r in rows if r.get("title")]
         if titles:
@@ -251,4 +254,5 @@ async def tool_find_pages_by_title(
         cleaned,
         limit=limit,
         extra={"prefix": prefix, "namespace": namespace},
+        truncated=hit_limit,
     )
