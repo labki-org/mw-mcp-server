@@ -51,6 +51,7 @@ def mock_vectors():
         "page_timestamps": {}
     }
     mock.delete_page.return_value = 5
+    mock.delete_page_and_pending_job.return_value = 5
     mock.add_documents.return_value = 10
     return mock
 
@@ -191,9 +192,55 @@ def test_delete_page_embedding(client, mock_settings, mock_vectors):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "deleted"
-    
-    mock_vectors.delete_page.assert_awaited_once()
+    assert data["count"] == 5
+
+    # Must also cancel any pending update so it can't re-insert the page.
+    mock_vectors.delete_page_and_pending_job.assert_awaited_once_with(
+        "test-wiki", "Test Page To Delete"
+    )
     mock_vectors.commit.assert_awaited_once()
+
+
+def test_update_page_embedding_queue_full_returns_503(client, mock_settings):
+    """A full queue must reject (503 + Retry-After) rather than drop silently."""
+    from mw_mcp_server.embeddings.queue import QueueFullError
+
+    token = create_valid_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {"title": "Test Page", "content": "hello", "namespace": 0}
+
+    with patch(
+        "mw_mcp_server.embeddings.queue.embedding_queue.enqueue",
+        new_callable=AsyncMock,
+        side_effect=QueueFullError("full"),
+    ):
+        resp = client.post("/embeddings/page", json=payload, headers=headers)
+
+    assert resp.status_code == 503
+    assert "Retry-After" in resp.headers
+
+
+def test_update_page_embedding_normalises_aware_timestamp(client, mock_settings):
+    """ISO timestamps with an offset are stored as naive UTC."""
+    from datetime import datetime
+
+    token = create_valid_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "title": "Test Page",
+        "content": "hello",
+        "last_modified": "2024-01-15T14:30:00+02:00",
+    }
+
+    with patch(
+        "mw_mcp_server.embeddings.queue.embedding_queue.enqueue", new_callable=AsyncMock
+    ) as mock_enqueue:
+        mock_enqueue.return_value = 1
+        resp = client.post("/embeddings/page", json=payload, headers=headers)
+
+    assert resp.status_code == 200
+    job = mock_enqueue.call_args.args[0]
+    assert job.last_modified == datetime(2024, 1, 15, 12, 30, 0)
 
 def test_missing_scope_rejected(client, mock_settings):
     # Token without "embeddings" scope

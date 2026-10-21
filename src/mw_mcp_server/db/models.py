@@ -188,3 +188,52 @@ class TokenUsage(Base):
         Index("idx_usage_lookup", "wiki_id", "user_id", "usage_date"),
     )
 
+
+
+# ---------------------------------------------------------------------
+# Embedding Job Model (durable work queue)
+# ---------------------------------------------------------------------
+
+class EmbeddingJobRecord(Base):
+    """
+    A pending embedding operation for one page.
+
+    There is at most one row per (wiki_id, page_title): a newer update or
+    delete for the same page overwrites the pending row (and bumps
+    ``generation``) instead of queueing behind it, so the latest request
+    always wins and a stale update can never re-insert a deleted page.
+
+    The worker leases a row (``leased_until``), does the work, then deletes
+    the row only if ``generation`` is unchanged; if the page was re-queued
+    meanwhile, the row stays and is picked up again with the newer payload.
+    """
+    __tablename__ = "embedding_job"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    wiki_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    page_title: Mapped[str] = mapped_column(Text, nullable=False)
+    op: Mapped[str] = mapped_column(String(16), nullable=False)  # upsert | delete
+    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    namespace: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_modified: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    rev_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    leased_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("wiki_id", "page_title", name="uq_embedding_job_page"),
+        Index("idx_embedding_job_due", "next_attempt_at"),
+    )

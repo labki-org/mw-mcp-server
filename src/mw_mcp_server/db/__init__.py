@@ -6,7 +6,14 @@ for PostgreSQL with pgvector.
 """
 
 from .session import get_async_session, async_engine, AsyncSessionLocal
-from .models import Base, Embedding, ChatSession, ChatMessage, TokenUsage
+from .models import (
+    Base,
+    Embedding,
+    EmbeddingJobRecord,
+    ChatSession,
+    ChatMessage,
+    TokenUsage,
+)
 from .vector_store import VectorStore
 
 __all__ = [
@@ -15,6 +22,7 @@ __all__ = [
     "AsyncSessionLocal",
     "Base",
     "Embedding",
+    "EmbeddingJobRecord",
     "ChatSession",
     "ChatMessage",
     "TokenUsage",

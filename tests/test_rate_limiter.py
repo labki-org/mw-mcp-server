@@ -5,7 +5,7 @@ Tests for token-based rate limiting logic.
 """
 
 import pytest
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from mw_mcp_server.db.rate_limiter import RateLimiter
@@ -88,10 +88,66 @@ class TestRateLimiterCheckLimit:
             limiter = RateLimiter(session)
             status = await limiter.check_limit("wiki1", 42)
 
-        today = date.today()
+        today = datetime.now(timezone.utc).date()  # quota days are UTC days
         expected_reset = datetime.combine(
             today + timedelta(days=1),
             datetime.min.time(),
             tzinfo=timezone.utc,
         )
         assert status.reset_time == expected_reset
+
+
+# ---------------------------------------------------------------------
+# Atomic reservation (needs PostgreSQL; skipped when unavailable)
+# ---------------------------------------------------------------------
+
+from pg_utils import pg_session_factory_fixture  # noqa: E402,F401  (registers fixture)
+
+
+def _limiter(sf, limit):
+    return RateLimiter(session=None, session_factory=sf, daily_limit=limit)
+
+
+class TestRateLimiterReserve:
+    """Concurrency-safe reserve/reconcile against a real database."""
+
+    @pytest.mark.asyncio
+    async def test_parallel_requests_cannot_all_pass(self, pg_session_factory):
+        """N parallel reservations must not all be admitted on a stale total."""
+        import asyncio
+
+        results = await asyncio.gather(
+            *[
+                _limiter(pg_session_factory, 10_000).reserve("wiki1", 42, 4_000)
+                for _ in range(8)
+            ]
+        )
+        admitted = [r for _, r in results if r is not None]
+        # 0 -> 4k -> 8k -> 12k: the 4th onward sees total >= limit.
+        assert len(admitted) == 3
+        assert all(status.is_limited for status, r in results if r is None)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_replaces_reservation_with_actual(self, pg_session_factory):
+        limiter = _limiter(pg_session_factory, 10_000)
+        status, reservation = await limiter.reserve("wiki1", 42, 4_000)
+        assert reservation is not None and status.tokens_used == 4_000
+
+        await limiter.reconcile(reservation, prompt_tokens=700, completion_tokens=300)
+
+        async with pg_session_factory() as s:
+            limiter = RateLimiter(s, session_factory=pg_session_factory, daily_limit=10_000)
+            status = await limiter.check_limit("wiki1", 42)
+        assert status.tokens_used == 1_000
+        assert status.requests_today == 1
+
+    @pytest.mark.asyncio
+    async def test_over_limit_user_is_rejected(self, pg_session_factory):
+        limiter = _limiter(pg_session_factory, 1_000)
+        _, first = await limiter.reserve("wiki1", 42, 500)
+        await limiter.reconcile(first, prompt_tokens=900, completion_tokens=300)
+
+        status, reservation = await limiter.reserve("wiki1", 42, 500)
+        assert reservation is None
+        assert status.is_limited
+        assert status.tokens_used == 1_200
