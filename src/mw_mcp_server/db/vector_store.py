@@ -39,6 +39,11 @@ class PageSyncState(NamedTuple):
     embedding_model: Optional[str]
 
 
+def escape_like(value: str) -> str:
+    """Escape LIKE/ILIKE metacharacters so *value* matches literally (escape char ``\\``)."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _version_at_least(version: Optional[str], minimum: Tuple[int, ...]) -> bool:
     if not version:
         return False
@@ -329,7 +334,10 @@ class VectorStore:
             stmt = stmt.where(Embedding.namespace == namespace)
 
         if pattern:
-            stmt = stmt.where(Embedding.page_title.ilike(f"%{pattern}%"))
+            # The pattern is LLM-supplied: match it literally, not as LIKE syntax.
+            stmt = stmt.where(
+                Embedding.page_title.ilike(f"%{escape_like(pattern)}%", escape="\\")
+            )
 
         result = await self._session.execute(stmt)
         return sorted([row[0] for row in result.all()])
