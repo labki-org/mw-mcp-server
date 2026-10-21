@@ -3,7 +3,7 @@
 # This configuration is optimized for VPS deployment with:
 # - Production-ready settings
 # - Resource limits
-# - Gunicorn with multiple workers
+# - Single uvicorn worker (in-memory embedding queue; see Dockerfile)
 # - PostgreSQL with pgvector for embeddings and chat storage
 #
 # Usage:
@@ -27,8 +27,8 @@ services:
       - .env
 
     environment:
-      - WORKERS=${WORKERS:-1}
-      - DATABASE_URL=postgresql+asyncpg://mcp:${DB_PASSWORD}@postgres:5432/mcp
+      # Fails fast if DB_PASSWORD is unset instead of using an empty password.
+      - DATABASE_URL=postgresql+asyncpg://mcp:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/mcp
 
     depends_on:
       postgres:
@@ -40,6 +40,10 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
     # -------------------------------
     # Operational Reliability
@@ -47,11 +51,12 @@ services:
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # curl is not in the slim image; probe readiness with the stdlib.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 20s
 
     # -------------------------------
     # Resource Limits
@@ -81,13 +86,14 @@ services:
   # PostgreSQL with pgvector
   # -------------------------------
   postgres:
-    image: pgvector/pgvector:pg16
+    # pgvector >= 0.7 is required for halfvec; pinned by digest.
+    image: pgvector/pgvector:0.8.7-pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
     restart: unless-stopped
 
     environment:
       POSTGRES_DB: mcp
       POSTGRES_USER: mcp
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
 
     volumes:
       - pgdata:/var/lib/postgresql/data
