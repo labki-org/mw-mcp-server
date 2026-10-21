@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
+from urllib.parse import urlparse
+import asyncio
 import logging
 import httpx
 
@@ -25,6 +27,40 @@ from ..auth.models import UserContext
 
 logger = logging.getLogger("mcp.mediawiki")
 
+# mwassistant-check-access rejects more than this many titles per request.
+CHECK_ACCESS_BATCH_SIZE = 100
+
+# Request params that are safe to include in logs (everything else, e.g.
+# usernames, page titles and queries, is redacted).
+_LOGGABLE_PARAMS = frozenset({"action", "format", "formatversion", "prop", "list", "limit"})
+
+
+def _redact_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of request params safe for logging."""
+    return {
+        key: (value if key in _LOGGABLE_PARAMS else "<redacted>")
+        for key, value in params.items()
+    }
+
+
+def _user_params(user: Optional[UserContext]) -> Dict[str, Any]:
+    """
+    username/user_id params identifying the acting user to MWAssistant.
+
+    These duplicate the signed ``user``/``user_id`` JWT claims (MWAssistant
+    rejects a mismatch). For an anonymous identity (user_id 0) no username
+    is sent, because MWAssistant compares it against the anonymous user's
+    name and would reject it.
+    """
+    if user is None:
+        return {}
+    params: Dict[str, Any] = {}
+    if user.user_id:
+        params["user_id"] = user.user_id
+        if user.username:
+            params["username"] = user.username
+    return params
+
 
 # ---------------------------------------------------------------------
 # Data Classes
@@ -32,9 +68,17 @@ logger = logging.getLogger("mcp.mediawiki")
 
 @dataclass(frozen=True)
 class PageContent:
-    """Result of fetching page wikitext, optionally including revision timestamp."""
+    """
+    Result of fetching page wikitext, optionally including revision timestamp.
+
+    ``title``/``namespace``/``rev_id`` are filled when the wiki reports them
+    (canonical prefixed title, namespace ID, latest revision ID).
+    """
     wikitext: Optional[str]
     timestamp: Optional[str] = None
+    title: Optional[str] = None
+    namespace: Optional[int] = None
+    rev_id: Optional[int] = None
 
 
 # ---------------------------------------------------------------------
@@ -96,7 +140,9 @@ class MediaWikiClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=self.timeout,
-                follow_redirects=True,
+                # Never follow redirects: requests carry a signed JWT and the
+                # target URL may come from a token claim.
+                follow_redirects=False,
             )
         return self._client
 
@@ -119,9 +165,11 @@ class MediaWikiClient:
         scopes: Optional[List[str]] = None,
         api_url: Optional[str] = None,
         wiki_id: Optional[str] = None,
+        user: Optional[UserContext] = None,
+        method: str = "GET",
     ) -> Dict[str, Any]:
         """
-        Perform a single authenticated GET request to the MediaWiki API.
+        Perform a single authenticated request to the MediaWiki API.
 
         Parameters
         ----------
@@ -137,6 +185,13 @@ class MediaWikiClient:
         wiki_id : Optional[str]
             Target wiki ID for signing the JWT request.
 
+        user : Optional[UserContext]
+            User the request acts for; bound into the JWT as signed
+            ``user``/``user_id`` claims. None for system calls.
+
+        method : str
+            "GET" (default) or "POST" (params sent form-encoded).
+
         Returns
         -------
         Dict[str, Any]
@@ -148,33 +203,36 @@ class MediaWikiClient:
         # Use passed wiki_id or fallback to instance default
         target_wiki_id = wiki_id or self.wiki_id
         
-        token = create_mcp_to_mw_jwt(scopes, wiki_id=target_wiki_id)
-        headers = {
-            "Authorization": f"Bearer {token}",
-        }
-
-        client = await self._get_client()
-
         target_url = api_url or self.base_url
-        
+
         if not target_url:
             raise MediaWikiRequestError(
                 "No API URL configured. The client must be initialized with a base_url "
                 "or requests must provide a per-request 'api_url' via JWT."
             )
 
+        parsed_url = urlparse(target_url)
+        if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+            raise MediaWikiRequestError("MediaWiki API URL must be an absolute http(s) URL.")
+
+        token = create_mcp_to_mw_jwt(scopes, wiki_id=target_wiki_id, user=user)
+        headers = {
+            "Authorization": f"Bearer {token}",
+        }
+
+        client = await self._get_client()
+
         try:
-            response = await client.get(
-                target_url,
-                params=params,
-                headers=headers,
-            )
+            if method.upper() == "POST":
+                response = await client.post(target_url, data=params, headers=headers)
+            else:
+                response = await client.get(target_url, params=params, headers=headers)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             logger.error(
                 "MediaWiki request failed: %s %s (%s)",
-                self.base_url,
-                params,
+                parsed_url.netloc,
+                _redact_params(params),
                 type(exc).__name__,
             )
             raise MediaWikiRequestError(
@@ -284,17 +342,15 @@ class MediaWikiClient:
                 "title": title,
                 "format": "json",
                 "formatversion": 2,
+                **_user_params(user),
             }
-            if user.username:
-                params["username"] = user.username
-            if user.user_id:
-                params["user_id"] = user.user_id
 
             data = await self.request(
                 params,
                 scopes=["page_read"],
                 api_url=user.api_url or api_url,
                 wiki_id=user.wiki_id or wiki_id,
+                user=user,
             )
 
             result = data.get("mwassistant-page", {})
@@ -304,9 +360,15 @@ class MediaWikiClient:
                 )
             if not result.get("exists", False):
                 return PageContent(wikitext=None)
+            ns = result.get("ns")
+            rev_id = result.get("revid")
+            canonical = result.get("title")
             return PageContent(
                 wikitext=result.get("wikitext"),
                 timestamp=result.get("timestamp"),
+                title=canonical if isinstance(canonical, str) and canonical else None,
+                namespace=ns if isinstance(ns, int) else None,
+                rev_id=rev_id if isinstance(rev_id, int) and rev_id > 0 else None,
             )
 
         # Legacy path: standard action=query (no user permission checks)
@@ -360,17 +422,15 @@ class MediaWikiClient:
                 "title": title,
                 "format": "json",
                 "formatversion": 2,
+                **_user_params(user),
             }
-            if user.username:
-                params["username"] = user.username
-            if user.user_id:
-                params["user_id"] = user.user_id
 
             data = await self.request(
                 params,
                 scopes=["page_read"],
                 api_url=user.api_url or api_url,
                 wiki_id=user.wiki_id or wiki_id,
+                user=user,
             )
 
             result = data.get("mwassistant-page-info", {})
@@ -384,7 +444,7 @@ class MediaWikiClient:
             return {
                 "title": result.get("title", title),
                 "pageid": result.get("pageid"),
-                "namespace": result.get("ns", 0),
+                "namespace": result.get("ns"),
                 "length": result.get("length", 0),
                 "last_modified": result.get("timestamp"),
             }
@@ -445,6 +505,7 @@ class MediaWikiClient:
             scopes=["page_read"],
             api_url=user.api_url if user else api_url,
             wiki_id=user.wiki_id if user else wiki_id,
+            user=user,
         )
         page = self._extract_first_page(data)
         if page is None:
@@ -487,20 +548,18 @@ class MediaWikiClient:
             params: Dict[str, Any] = {
                 "action": "mwassistant-category-members",
                 "category": category,
-                "limit": min(limit, 500),
+                "limit": min(max(limit, 1), 500),
                 "format": "json",
                 "formatversion": 2,
+                **_user_params(user),
             }
-            if user.username:
-                params["username"] = user.username
-            if user.user_id:
-                params["user_id"] = user.user_id
 
             data = await self.request(
                 params,
                 scopes=["page_read"],
                 api_url=user.api_url or api_url,
                 wiki_id=user.wiki_id or wiki_id,
+                user=user,
             )
 
             result = data.get("mwassistant-category-members", {})
@@ -611,17 +670,14 @@ class MediaWikiClient:
             "limit": min(max(limit, 1), 500),
             "format": "json",
             "formatversion": 2,
+            **_user_params(user),
         }
-        if user is not None:
-            if user.username:
-                params["username"] = user.username
-            if user.user_id:
-                params["user_id"] = user.user_id
 
         target_api = user.api_url if user else api_url
         target_wiki = user.wiki_id if user else wiki_id
         data = await self.request(
             params, scopes=["page_read"], api_url=target_api, wiki_id=target_wiki,
+            user=user,
         )
 
         return data.get("mwassistant-find-pages-by-title", {}).get("pages", [])
@@ -654,10 +710,8 @@ class MediaWikiClient:
             "query": query,
             "limit": limit,
             "format": "json",
+            **_user_params(user),
         }
-
-        if user and user.username:
-            params["username"] = user.username
 
         # scope "search" is required by the endpoint configuration
         data = await self.request(
@@ -665,6 +719,7 @@ class MediaWikiClient:
             scopes=["search"],
             api_url=user.api_url if user else None,
             wiki_id=user.wiki_id if user else None,
+            user=user,
         )
         
         # The result is nested under 'mwassistant-keyword-search' key
@@ -697,29 +752,44 @@ class MediaWikiClient:
         if not titles:
             return {}
 
-        # Join titles with pipe as MW API convention
-        
-        username = user.username if isinstance(user, UserContext) else user
-        user_id = user.user_id if isinstance(user, UserContext) else None
-        api_url = user.api_url if isinstance(user, UserContext) else None
-        wiki_id = user.wiki_id if isinstance(user, UserContext) else None
+        ctx = user if isinstance(user, UserContext) else None
+        if ctx is not None:
+            user_params = _user_params(ctx)
+            api_url, wiki_id = ctx.api_url, ctx.wiki_id
+        else:
+            user_params = {"username": user} if user else {}
+            api_url, wiki_id = None, None
 
-        params = {
-            "action": "mwassistant-check-access",
-            "titles": "|".join(titles),
-            "username": username,
-            "format": "json",
-            "formatversion": 2,  # Use formatversion=2 for proper JSON boolean serialization
-        }
-        
-        if user_id:
-            params["user_id"] = user_id
+        # The endpoint accepts at most CHECK_ACCESS_BATCH_SIZE titles per
+        # request; POST keeps long title lists out of the URL.
+        unique_titles = list(dict.fromkeys(titles))
+        batches = [
+            unique_titles[i:i + CHECK_ACCESS_BATCH_SIZE]
+            for i in range(0, len(unique_titles), CHECK_ACCESS_BATCH_SIZE)
+        ]
 
-        data = await self.request(params, scopes=["check_access"], api_url=api_url, wiki_id=wiki_id)
+        async def check_batch(batch: List[str]) -> Dict[str, Any]:
+            params = {
+                "action": "mwassistant-check-access",
+                "titles": "|".join(batch),
+                "format": "json",
+                "formatversion": 2,  # Proper JSON boolean serialization
+                **user_params,
+            }
+            data = await self.request(
+                params,
+                scopes=["check_access"],
+                api_url=api_url,
+                wiki_id=wiki_id,
+                user=ctx,
+                method="POST",
+            )
+            # The result is nested under 'mwassistant-check-access' key
+            return data.get("mwassistant-check-access", {}).get("access", {}) or {}
 
-        # The result is nested under 'mwassistant-check-access' key
-        result = data.get("mwassistant-check-access", {})
-        access_map = result.get("access", {})
+        access_map: Dict[str, Any] = {}
+        for partial in await asyncio.gather(*(check_batch(b) for b in batches)):
+            access_map.update(partial)
 
         # With formatversion=2, MW returns actual JSON booleans
         # Also handle legacy string format ('true'/'false') for backward compatibility

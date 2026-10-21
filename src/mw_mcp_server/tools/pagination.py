@@ -21,6 +21,7 @@ def paginated(
     limit: int,
     label: str = "results",
     extra: Dict[str, Any] | None = None,
+    truncated: bool | None = None,
 ) -> Dict[str, Any]:
     """Wrap a list result with truncation metadata for the LLM.
 
@@ -34,9 +35,14 @@ def paginated(
         Field name to use for the result list. Default ``"results"``.
     extra : Optional[Dict[str, Any]]
         Additional top-level fields to merge in (e.g. domain context).
+    truncated : Optional[bool]
+        Whether more results may exist. Defaults to ``count >= limit``;
+        callers that filter rows after a capped fetch must pass it, since a
+        filtered count below the limit says nothing about completeness.
     """
     count = len(results)
-    truncated = count >= limit
+    if truncated is None:
+        truncated = count >= limit
     note = (
         f"Returned {count} of (≤{limit}) — the underlying call hit the limit, "
         "so MORE results may exist. Do NOT assume this is the full set: "

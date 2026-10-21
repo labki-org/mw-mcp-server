@@ -27,6 +27,21 @@ from ..db import VectorStore
 # Maximum allowed length for string arguments passed to tools
 MAX_TOOL_STRING_ARG_LENGTH = 10_000
 
+# Bounds for LLM-provided result sizes.
+MAX_VECTOR_K = 50
+MAX_TOOL_LIMIT = 500
+
+
+def _bounded_int(value: Any, default: int, maximum: int, minimum: int = 1) -> int:
+    """Coerce an LLM-provided count into [minimum, maximum] (default if unusable)."""
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, number))
+
 
 # ---------------------------------------------------------------------
 # Tool Type Definitions
@@ -76,7 +91,7 @@ async def _handle_vector_search(
     if not query:
         raise ValueError("mw_vector_search requires 'query' argument.")
 
-    k = args.get("k", 5)
+    k = _bounded_int(args.get("k"), 5, MAX_VECTOR_K)
 
     return await tool_vector_search(
         query=query,
@@ -97,7 +112,7 @@ async def _handle_search_pages(
     if not query:
         raise ValueError("mw_search_pages requires 'query' argument.")
 
-    limit = args.get("limit", 10)
+    limit = _bounded_int(args.get("limit"), 10, MAX_TOOL_LIMIT)
 
     return await tool_search_pages(
         query=query,
@@ -117,9 +132,10 @@ async def _handle_get_categories(
         wiki_id=user.wiki_id,
         prefix=args.get("prefix"),
         names=args.get("names"),
-        limit=args.get("limit", 50),
+        limit=_bounded_int(args.get("limit"), 50, MAX_TOOL_LIMIT),
         allowed_namespaces=user.allowed_namespaces,
         embedder=embedder,
+        user=user,
     )
 
 
@@ -134,9 +150,10 @@ async def _handle_get_properties(
         wiki_id=user.wiki_id,
         prefix=args.get("prefix"),
         names=args.get("names"),
-        limit=args.get("limit", 50),
+        limit=_bounded_int(args.get("limit"), 50, MAX_TOOL_LIMIT),
         allowed_namespaces=user.allowed_namespaces,
         embedder=embedder,
+        user=user,
     )
 
 
@@ -188,8 +205,9 @@ async def _handle_list_pages(
                         wiki_id=user.wiki_id,
                         namespace=None,
                         prefix=f"{raw_ns}:",
-                        limit=args.get("limit", 50),
+                        limit=_bounded_int(args.get("limit"), 50, MAX_TOOL_LIMIT),
                         allowed_namespaces=user.allowed_namespaces,
+                        user=user,
                     )
         
     return await tool_list_pages(
@@ -197,8 +215,9 @@ async def _handle_list_pages(
         wiki_id=user.wiki_id,
         namespace=ns_id,
         prefix=args.get("prefix"),
-        limit=args.get("limit", 50),
+        limit=_bounded_int(args.get("limit"), 50, MAX_TOOL_LIMIT),
         allowed_namespaces=user.allowed_namespaces,
+        user=user,
     )
 
 
@@ -223,7 +242,7 @@ async def _handle_get_category_members(
     category = args.get("category")
     if not category:
         raise ValueError("mw_get_category_members requires 'category' argument.")
-    limit = args.get("limit", 50)
+    limit = _bounded_int(args.get("limit"), 50, MAX_TOOL_LIMIT)
     return await tool_get_category_members(category, user, limit=limit)
 
 
@@ -239,8 +258,8 @@ async def _handle_find_pages_by_title(
     return await tool_find_pages_by_title(
         prefix=prefix,
         user=user,
-        namespace=int(args.get("namespace", 0)),
-        limit=int(args.get("limit", 50)),
+        namespace=_bounded_int(args.get("namespace"), 0, 2**31 - 1, minimum=0),
+        limit=_bounded_int(args.get("limit"), 50, MAX_TOOL_LIMIT),
     )
 
 

@@ -16,14 +16,19 @@ Security Model
 
 from __future__ import annotations
 
+import logging
+from typing import Callable, Optional, Set
+from urllib.parse import urlparse
+
 import jwt
-from typing import Callable
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from ..config import settings
 from .models import UserContext
+
+logger = logging.getLogger("mcp.auth")
 
 
 # ---------------------------------------------------------------------
@@ -101,6 +106,74 @@ def _decode_mw_token(token: str) -> dict:
             "require": ["iss", "aud", "iat", "exp", "user", "user_id", "roles", "scope", "wiki_id"],
         },
     )
+
+
+_API_URL_WARNED: Set[str] = set()
+
+
+def _is_http_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _normalize_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    return parsed._replace(
+        scheme=parsed.scheme.lower(), netloc=parsed.netloc.lower()
+    ).geturl().rstrip("/")
+
+
+def _resolve_api_url(wiki_id: str, token_api_url: object) -> Optional[str]:
+    """
+    Decide which MediaWiki API URL to call for this tenant.
+
+    The token's ``api_url`` claim selects where the server sends outbound,
+    JWT-signed requests, so it must not be blindly trusted (SSRF):
+
+    - If ``api_url`` is configured for the wiki in WIKI_CREDS, it is always
+      used, and a token naming a different URL is rejected.
+    - Otherwise the token value is used for backward compatibility (with a
+      one-time warning per wiki), but only if it is an http(s) URL.
+    """
+    if token_api_url is not None and not isinstance(token_api_url, str):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="'api_url' claim must be a string.",
+        )
+    token_url = token_api_url.strip() if token_api_url else None
+
+    creds = settings.wiki_creds.get(wiki_id)
+    configured = getattr(creds, "api_url", None) if creds else None
+
+    if configured:
+        if token_url and _normalize_url(token_url) != _normalize_url(configured):
+            logger.warning(
+                "Rejecting token for wiki '%s': api_url claim does not match the configured api_url",
+                wiki_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token 'api_url' does not match the configured wiki API URL.",
+            )
+        return configured
+
+    if not token_url:
+        return None
+
+    if not _is_http_url(token_url):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token 'api_url' must be an absolute http(s) URL.",
+        )
+
+    if wiki_id not in _API_URL_WARNED:
+        _API_URL_WARNED.add(wiki_id)
+        logger.warning(
+            "No api_url configured for wiki '%s' in WIKI_CREDS; using the api_url "
+            "from the incoming token. Configure api_url to pin the wiki endpoint.",
+            wiki_id,
+        )
+    return token_url
 
 
 # ---------------------------------------------------------------------
@@ -209,7 +282,7 @@ def verify_mw_to_mcp_jwt(
         allowed_namespaces = []
     allowed_namespaces = [ns for ns in allowed_namespaces if isinstance(ns, int)]
 
-    api_url = payload.get("api_url")
+    api_url = _resolve_api_url(wiki_id, payload.get("api_url"))
 
     return UserContext(
         username=username,
