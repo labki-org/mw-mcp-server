@@ -238,7 +238,83 @@ class Settings(BaseSettings):
         default=1000,
         ge=10,
         le=100_000,
-        description="Maximum number of pending embedding jobs in the queue.",
+        description="Maximum number of pending embedding jobs per wiki.",
+    )
+
+    embedding_queue_global_max_size: Optional[int] = Field(
+        default=None,
+        description="Cap on pending embedding jobs across all wikis (default: 10x embedding_queue_max_size).",
+    )
+
+    embedding_job_max_attempts: int = Field(
+        default=6,
+        ge=1, le=50,
+        description="Attempts before a failing embedding job is dropped.",
+    )
+
+    embedding_job_backoff_base_seconds: float = Field(
+        default=5,
+        ge=0,
+        description="Base delay for embedding job retry backoff.",
+    )
+
+    embedding_job_backoff_max_seconds: float = Field(
+        default=900,
+        ge=0,
+        description="Maximum delay between embedding job retries.",
+    )
+
+    embedding_job_lease_seconds: float = Field(
+        default=600,
+        ge=10,
+        description="How long a worker holds a claimed embedding job before it can be reclaimed.",
+    )
+
+    embedding_worker_poll_seconds: float = Field(
+        default=5,
+        gt=0,
+        description="Embedding worker poll interval when the queue is empty.",
+    )
+
+    llm_max_retries: int = Field(
+        default=3,
+        ge=0, le=10,
+        description="Retries for LLM calls on 408/409/429/5xx and timeouts.",
+    )
+
+    chat_context_token_budget: int = Field(
+        default=60000,
+        ge=1000,
+        description="Token budget for the messages sent to the LLM per call; older history is trimmed to fit.",
+    )
+
+    tool_result_max_chars: int = Field(
+        default=24000,
+        ge=1000,
+        description="Maximum characters of a single tool result passed to the LLM.",
+    )
+
+    chat_token_reservation: int = Field(
+        default=8000,
+        ge=0,
+        description="Tokens reserved against the daily limit when a chat run starts (reconciled afterwards).",
+    )
+
+    chat_persist_timeout_seconds: float = Field(
+        default=15,
+        gt=0,
+        description="Timeout for saving chat messages and usage after a run.",
+    )
+
+    session_cleanup_interval_seconds: float = Field(
+        default=21600,
+        gt=0,
+        description="Interval between expired chat session cleanups.",
+    )
+
+    enable_api_docs: bool = Field(
+        default=False,
+        description="Serve /docs, /redoc and /openapi.json (ENABLE_API_DOCS).",
     )
 
 

@@ -111,7 +111,7 @@ class EmbeddingQueue:
         # Safety cap across all wikis.
         self.global_maxsize = (
             global_maxsize if global_maxsize is not None
-            else int(_setting("embedding_queue_global_max_size", self.maxsize * 10))
+            else int(_setting("embedding_queue_global_max_size", None) or self.maxsize * 10)
         )
         self._session_factory = session_factory or AsyncSessionLocal
         self._wakeup: Optional[asyncio.Event] = None
@@ -366,7 +366,7 @@ class EmbeddingQueue:
         event = self._event()
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         event.clear()
 
