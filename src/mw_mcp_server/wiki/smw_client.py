@@ -16,6 +16,7 @@ Design Goals
 from __future__ import annotations
 
 from typing import Dict, Any, Optional, TYPE_CHECKING
+import hashlib
 import logging
 
 from .api_client import MediaWikiClient, MediaWikiRequestError, MediaWikiResponseError
@@ -85,7 +86,11 @@ class SMWClient:
         Returns
         -------
         Dict[str, Any]
-            Raw JSON response from SMW.
+            The ``mwassistant-smw`` result object:
+            ``{rows, printouts, count, has_more, errors, result}`` where
+            ``rows`` is ``[{title, printouts: {label: [values]}}]`` (already
+            filtered by the user's read permissions) and ``result`` is an
+            escaped HTML table rendering.
 
         Raises
         ------
@@ -102,14 +107,15 @@ class SMWClient:
             "action": "mwassistant-smw",
             "query": ask_query,
             "format": "json",
+            "formatversion": 2,
         }
 
         # Forward user identity for permission-aware query execution
-        if user is not None:
+        # (must match the signed user claims in the JWT).
+        if user is not None and user.user_id:
+            request_params["user_id"] = user.user_id
             if user.username:
                 request_params["username"] = user.username
-            if user.user_id:
-                request_params["user_id"] = user.user_id
 
         if params:
             request_params.update(params)
@@ -121,21 +127,22 @@ class SMWClient:
                 scopes=["smw_query"],
                 api_url=user.api_url if user else None,
                 wiki_id=user.wiki_id if user else None,
+                user=user,
             )
         except (MediaWikiRequestError, MediaWikiResponseError) as exc:
+            # Never log the query itself (it can contain user data).
             logger.error(
-                "SMW ask query failed: %s (%s)",
-                ask_query,
+                "SMW ask query failed: len=%d sha256=%s (%s)",
+                len(ask_query),
+                hashlib.sha256(ask_query.encode("utf-8")).hexdigest()[:12],
                 type(exc).__name__,
             )
-            raise SMWQueryError(
-                f"SMW query failed: {type(exc).__name__}"
-            ) from exc
+            # API errors (e.g. unsupported printouts) are useful to the
+            # caller; transport errors are not.
+            detail = str(exc) if isinstance(exc, MediaWikiResponseError) else type(exc).__name__
+            raise SMWQueryError(f"SMW query failed: {detail}") from exc
 
-        # The new parser endpoint returns {"mwassistant-smw": {"result": "..."}}
-        # But MediaWikiClient._request() likely unwraps the response based on 'format=json'.
-        # We need to verify what _request returns. 
-        # Usually standard MW API returns { "mwassistant-smw": { ... } } wrapper.
-        
-        # If _request returns the full inner body:
-        return data
+        result = data.get("mwassistant-smw")
+        if not isinstance(result, dict):
+            raise SMWQueryError("SMW query failed: malformed response from wiki.")
+        return result

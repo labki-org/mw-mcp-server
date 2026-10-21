@@ -24,7 +24,23 @@ logger = logging.getLogger("mcp.embedder")
 
 
 class EmbeddingError(RuntimeError):
-    """Raised when embedding generation fails."""
+    """Raised when embedding generation fails.
+
+    ``retryable`` is True for transient provider failures (timeouts,
+    connection errors, HTTP 429 and 5xx) that are worth retrying later.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _is_transient_http_error(exc: httpx.HTTPError) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or code >= 500
+    # Timeouts, connection resets, DNS failures, etc.
+    return isinstance(exc, httpx.TransportError)
 
 
 class Embedder:
@@ -142,7 +158,8 @@ class Embedder:
                     str(exc),
                 )
                 raise EmbeddingError(
-                    f"Embedding generation failed: {type(exc).__name__}"
+                    f"Embedding generation failed: {type(exc).__name__}",
+                    retryable=_is_transient_http_error(exc),
                 ) from exc
 
             embeddings = self._extract_embeddings(response.json())

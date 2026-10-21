@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from mw_mcp_server.auth.models import UserContext
+from mw_mcp_server.tools import wiki_tools
 from mw_mcp_server.tools.wiki_tools import _find_best_match, tool_run_smw_ask
 
 
@@ -66,6 +67,14 @@ def mock_vector_store():
 
     store.get_pages_by_namespace = AsyncMock(side_effect=_get_pages)
     return store
+
+
+@pytest.fixture(autouse=True)
+def all_pages_readable(monkeypatch):
+    """"Did you mean" suggestions are access-checked; allow everything by default."""
+    check = AsyncMock(side_effect=lambda titles, user: {t: True for t in titles})
+    monkeypatch.setattr(wiki_tools.mw_client, "check_read_access", check)
+    return check
 
 
 @pytest.fixture
@@ -279,7 +288,11 @@ class TestSmwAskValidation:
             client=mock_smw_client,
             vector_store=mock_vector_store,
         )
-        assert result == {"result": "", "filtered_count": 0}
+        smw = result["mwassistant-smw"]
+        assert smw["rows"] == []
+        assert smw["count"] == 0
+        assert smw["truncated"] is False
+        assert "filtered_count" not in smw
         mock_smw_client.ask.assert_not_called()
 
     async def test_combined_query_all_valid(self, user, mock_vector_store, mock_smw_client):
@@ -361,3 +374,93 @@ class TestSmwAskConcurrency:
             vector_store=mock_vector_store,
         )
         mock_vector_store.get_pages_by_namespace.assert_not_called()
+
+
+# ===================================================================
+# Suggestions must not reveal unreadable pages
+# ===================================================================
+
+
+class TestSmwAskSuggestionAccess:
+    async def test_unreadable_suggestion_is_not_revealed(
+        self, user, mock_vector_store, mock_smw_client, all_pages_readable
+    ):
+        all_pages_readable.side_effect = lambda titles, user: {t: False for t in titles}
+        # "has name" would suggest Property:Has name, which the user cannot read.
+        await tool_run_smw_ask(
+            "[[Category:City]]|?has name",
+            user,
+            client=mock_smw_client,
+            vector_store=mock_vector_store,
+        )
+        all_pages_readable.assert_awaited_once()
+        mock_smw_client.ask.assert_called_once()
+
+    async def test_readable_suggestion_raises(
+        self, user, mock_vector_store, mock_smw_client, all_pages_readable
+    ):
+        with pytest.raises(ValueError, match="Property:Has name"):
+            await tool_run_smw_ask(
+                "[[Category:City]]|?has name",
+                user,
+                client=mock_smw_client,
+                vector_store=mock_vector_store,
+            )
+        checked = all_pages_readable.await_args.args[0]
+        assert checked == ["Property:Has name"]
+
+
+# ===================================================================
+# Result shape returned to the LLM
+# ===================================================================
+
+
+class TestSmwAskResultShape:
+    async def test_compacts_wiki_result(self, user):
+        smw = AsyncMock()
+        smw.ask = AsyncMock(return_value={
+            "result": "<table>...</table>",
+            "rows": [
+                {"title": "Berlin", "printouts": {"Population": ["3500000"], "Located in": ["Germany", "EU"]}},
+                {"title": "Nowhere", "printouts": {"Population": [], "Located in": []}},
+            ],
+            "printouts": ["Population", "Located in"],
+            "count": 2,
+            "has_more": False,
+            "errors": [],
+        })
+        out = (await tool_run_smw_ask(
+            "[[Category:City]]|?Population|?Located in", user, client=smw,
+        ))["mwassistant-smw"]
+        assert out["rows"] == [
+            {"title": "Berlin", "printouts": {"Population": ["3500000"], "Located in": ["Germany", "EU"]}},
+            {"title": "Nowhere", "printouts": {"Population": [], "Located in": []}},
+        ]
+        assert "result" not in out
+        assert out["printouts"] == ["Population", "Located in"]
+        assert out["count"] == 2
+        assert out["truncated"] is False
+        assert out["errors"] == []
+        assert "result" not in out
+        assert "note" not in out
+
+    async def test_truncated_result_has_note(self, user):
+        smw = AsyncMock()
+        smw.ask = AsyncMock(return_value={
+            "rows": [{"title": "A", "printouts": {}}],
+            "printouts": [],
+            "count": 1,
+            "has_more": True,
+            "errors": ["Some warning"],
+        })
+        out = (await tool_run_smw_ask("[[Category:City]]|limit=1", user, client=smw))["mwassistant-smw"]
+        assert out["truncated"] is True
+        assert "note" in out
+        assert out["errors"] == ["Some warning"]
+
+    async def test_format_param_passed_through(self, user):
+        """The wiki forces its own format, so |format= is no longer stripped."""
+        smw = AsyncMock()
+        smw.ask = AsyncMock(return_value={"rows": [], "printouts": [], "count": 0, "has_more": False, "errors": []})
+        await tool_run_smw_ask("{{#ask:[[Category:City]]|format=json}}", user, client=smw)
+        assert smw.ask.await_args.args[0] == "[[Category:City]]|format=json"

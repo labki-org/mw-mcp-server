@@ -14,7 +14,8 @@ Responsibilities
 
 from __future__ import annotations
 
-from typing import Optional, Dict, Any, Union
+from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple, Union
 import asyncio
 import re
 
@@ -27,10 +28,15 @@ from ..db import VectorStore
 from ..embeddings.queue import embedding_queue, EmbeddingJob
 from .schema_tools import NS_CATEGORY, NS_PROPERTY
 from .pagination import paginated
+from .access import readable_subset
 
 logger = logging.getLogger("mcp.wiki_tools")
 
 _SPECIAL_PRINTOUTS = frozenset({"category", "mainlabel"})
+
+# The SMW tool result stays wrapped in this key: MWAssistant's chat UI
+# looks for it to render the tool result as a table.
+SMW_RESULT_KEY = "mwassistant-smw"
 _REDIRECT_RE = re.compile(r"#REDIRECT\s*\[\[(.+?)\]\]", re.IGNORECASE)
 
 
@@ -134,7 +140,7 @@ async def tool_get_page(
         if vector_store is not None and target_page.wikitext:
             try:
                 await _check_embedding_staleness(
-                    target_title, target_page, user, vector_store
+                    target_title, target_page, user, vector_store, client
                 )
             except Exception:
                 logger.debug("Staleness check failed for '%s'", target_title, exc_info=True)
@@ -150,7 +156,7 @@ async def tool_get_page(
     if vector_store is not None and page.wikitext:
         try:
             await _check_embedding_staleness(
-                title, page, user, vector_store
+                title, page, user, vector_store, client
             )
         except Exception:
             # Staleness check is best-effort; don't fail the page fetch
@@ -159,51 +165,76 @@ async def tool_get_page(
     return page.wikitext
 
 
+def _parse_revision_timestamp(rev_ts_str: str) -> datetime:
+    """Parse a MW timestamp: ISO "2024-01-15T12:30:00Z" or MW format "20240115123000"."""
+    if "T" in rev_ts_str:
+        return datetime.fromisoformat(rev_ts_str.replace("Z", "+00:00"))
+    return datetime.strptime(rev_ts_str, "%Y%m%d%H%M%S")
+
+
+def _is_stale(rev_ts: datetime, emb_ts: Optional[datetime]) -> bool:
+    if emb_ts is None:
+        return True
+    if emb_ts.tzinfo is None:
+        return rev_ts.replace(tzinfo=None) > emb_ts
+    return rev_ts > emb_ts
+
+
 async def _check_embedding_staleness(
     title: str,
     page: PageContent,
     user: UserContext,
     vector_store: VectorStore,
+    client: MediaWikiClient,
 ) -> None:
     """
     Compare page revision timestamp (from PageContent) against embedding timestamp.
     If stale or missing, enqueue a re-embedding job.
 
-    The revision timestamp comes from the mwassistant-page response, so no
-    extra API call is needed — this works on private wikis too.
+    The revision timestamp comes from the mwassistant-page response. The
+    namespace and canonical title are taken from the wiki (mwassistant-page
+    when it reports them, otherwise mwassistant-page-info) and never guessed
+    from the title: a page in a custom namespace filed as namespace 0 would
+    surface in main-namespace listings for users who cannot read it.
     """
-    from datetime import datetime
-
     rev_ts_str = page.timestamp
     if rev_ts_str is None:
         return  # no timestamp available (older MW extension version)
 
-    emb_ts = await vector_store.get_embedding_last_modified(user.wiki_id, title)
+    rev_ts = _parse_revision_timestamp(rev_ts_str)
 
-    # Parse MW timestamp: either ISO "2024-01-15T12:30:00Z" or MW format "20240115123000"
-    if "T" in rev_ts_str:
-        rev_ts = datetime.fromisoformat(rev_ts_str.replace("Z", "+00:00"))
-    else:
-        rev_ts = datetime.strptime(rev_ts_str, "%Y%m%d%H%M%S")
+    canonical = page.title or title
+    emb_ts = await vector_store.get_embedding_last_modified(user.wiki_id, canonical)
+    if not _is_stale(rev_ts, emb_ts):
+        return
 
-    ns = _parse_namespace_from_title(title)
+    namespace = page.namespace
+    if namespace is None or page.title is None:
+        info = await client.get_page_info(
+            title, api_url=user.api_url, wiki_id=user.wiki_id, user=user,
+        )
+        info_title = info.get("title") if info else None
+        info_ns = info.get("namespace") if info else None
+        if not isinstance(info_title, str) or not info_title or not isinstance(info_ns, int):
+            logger.debug("Skipping re-embed of '%s': wiki did not report namespace/title", title)
+            return
+        namespace = info_ns
+        if info_title != canonical:
+            canonical = info_title
+            emb_ts = await vector_store.get_embedding_last_modified(user.wiki_id, canonical)
+            if not _is_stale(rev_ts, emb_ts):
+                return
 
-    is_stale = emb_ts is None or (
-        emb_ts.tzinfo is None and rev_ts.replace(tzinfo=None) > emb_ts
-    ) or (
-        emb_ts.tzinfo is not None and rev_ts > emb_ts
-    )
-
-    if is_stale:
-        logger.info("Stale embedding detected for '%s', enqueuing refresh", title)
-        await embedding_queue.enqueue(EmbeddingJob(
-            wiki_id=user.wiki_id,
-            title=title,
-            content=page.wikitext,
-            namespace=ns,
-            last_modified=rev_ts.replace(tzinfo=None),
-            request_id=f"staleness-{user.wiki_id}-{title}",
-        ))
+    logger.info("Stale embedding detected for '%s', enqueuing refresh", canonical)
+    await embedding_queue.enqueue(EmbeddingJob(
+        wiki_id=user.wiki_id,
+        title=canonical,
+        content=page.wikitext,
+        namespace=namespace,
+        last_modified=rev_ts.replace(tzinfo=None),
+        rev_id=page.rev_id,
+        request_id=f"staleness-{user.wiki_id}-{canonical}",
+    ))
 
 
 def _parse_namespace_from_title(title: str) -> int:
@@ -296,6 +327,10 @@ async def tool_get_category_members(
             f"Failed to fetch category members for '{category}': {type(exc).__name__}: {exc}"
         ) from exc
 
+    # Truncation is decided by the capped fetch, before filtering: a
+    # filtered count below the limit does not mean the set is complete.
+    hit_limit = len(members) >= limit
+
     # Filter through page-level access check
     if members:
         titles = [m.get("title", "") for m in members if m.get("title")]
@@ -309,21 +344,23 @@ async def tool_get_category_members(
         limit=limit,
         label="members",
         extra={"category": category},
+        truncated=hit_limit,
     )
 
 
-def _find_best_match(
+def _suggest_match(
     name: str,
     known_set: set,
     known_lower_map: dict,
     namespace_prefix: str,
-) -> None:
+) -> Optional[Tuple[str, str]]:
     """
     Fuzzy-match *name* against a known set of wiki page titles.
 
-    Raises ``ValueError`` with a suggestion when a close match is found.
-    Returns silently when the name is valid or when no close match exists
-    (to avoid false positives for built-in SMW properties, unindexed items, etc.).
+    Returns ``(suggested_title, error_message)`` when *name* does not exist
+    but a close match does, else None. None is also returned when no close
+    match exists (to avoid false positives for built-in SMW properties,
+    unindexed items, etc.).
     """
     tool_hint = (
         "mw_get_properties" if namespace_prefix == "Property:" else "mw_get_categories"
@@ -332,13 +369,13 @@ def _find_best_match(
 
     # 1. Exact match — valid, nothing to do
     if check_name in known_set:
-        return
+        return None
 
     # 2. "Has " prefix variation (Property namespace only)
     if namespace_prefix == "Property:":
         has_variation = f"Property:Has {name}"
         if has_variation in known_set:
-            raise ValueError(
+            return has_variation, (
                 f"Property '{name}' does not exist. "
                 f"Did you mean '{has_variation}'? "
                 f"Please verify property names using `{tool_hint}`."
@@ -347,7 +384,7 @@ def _find_best_match(
     # 3. Case-insensitive match
     if check_name.lower() in known_lower_map:
         correct = known_lower_map[check_name.lower()]
-        raise ValueError(
+        return correct, (
             f"{namespace_prefix.rstrip(':')}"
             f" '{name}' does not exist (Case Mismatch). "
             f"Did you mean '{correct}'? MediaWiki is case-sensitive."
@@ -357,11 +394,67 @@ def _find_best_match(
     variant = name[:-1] if name.lower().endswith("s") else name + "s"
     variant_full = f"{namespace_prefix}{variant}"
     if variant_full in known_set:
-        raise ValueError(
+        return variant_full, (
             f"{namespace_prefix.rstrip(':')} '{name}' not found. "
             f"Did you mean '{variant_full}'? "
             f"Please verify using `{tool_hint}`."
         )
+
+    return None
+
+
+def _find_best_match(
+    name: str,
+    known_set: set,
+    known_lower_map: dict,
+    namespace_prefix: str,
+) -> None:
+    """
+    Raise ``ValueError`` with a suggestion when *name* is a near miss of a
+    known title (see :func:`_suggest_match`); return silently otherwise.
+
+    Does not check whether the user may read the suggested page; callers
+    exposing the message to a user must do that.
+    """
+    match = _suggest_match(name, known_set, known_lower_map, namespace_prefix)
+    if match is not None:
+        raise ValueError(match[1])
+
+
+def _compact_smw_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Reduce the mwassistant-smw result to what the LLM needs.
+
+    Rows keep the wiki's ``{"title": ..., "printouts": {<label>: [values]}}``
+    shape, which the MWAssistant chat UI renders as a linked table; only the
+    HTML rendering is dropped.
+    """
+    printouts = [p for p in result.get("printouts") or [] if isinstance(p, str)]
+    rows: List[Dict[str, Any]] = []
+    for raw in result.get("rows") or []:
+        if not isinstance(raw, dict):
+            continue
+        values_by_label = raw.get("printouts")
+        rows.append({
+            "title": raw.get("title"),
+            "printouts": values_by_label if isinstance(values_by_label, dict) else {},
+        })
+
+    has_more = bool(result.get("has_more"))
+    compact: Dict[str, Any] = {
+        "rows": rows,
+        "printouts": printouts,
+        "count": result.get("count", len(rows)),
+        "truncated": has_more,
+        "errors": [e for e in result.get("errors") or [] if isinstance(e, str)],
+    }
+    if has_more:
+        compact["note"] = (
+            "More results exist than were returned. Narrow the query, or page "
+            "through results with |limit= (max 500) and |offset=. Do NOT assume "
+            "this is the full result set."
+        )
+    return compact
 
 
 async def tool_run_smw_ask(
@@ -369,6 +462,7 @@ async def tool_run_smw_ask(
     user: UserContext,
     client: Optional[SMWClient] = None,
     vector_store: Optional[VectorStore] = None,
+    mw: Optional[MediaWikiClient] = None,
 ) -> Dict[str, Any]:
     """
     Execute a Semantic MediaWiki ASK query.
@@ -387,10 +481,15 @@ async def tool_run_smw_ask(
     vector_store : VectorStore
         Optional reference to vector store for schema validation.
 
+    mw : MediaWikiClient
+        Optional override for the client used to permission-check
+        "did you mean" suggestions.
+
     Returns
     -------
     Dict[str, Any]
-        Raw SMW ASK result structure.
+        ``{"mwassistant-smw": {rows, printouts, count, truncated, errors[, note]}}``
+        where each row is ``{"title": ..., "printouts": {<label>: [values]}}``.
     """
     if not ask_query:
         raise ValueError("mw_run_smw_ask requires a non-empty 'ask' argument.")
@@ -400,7 +499,7 @@ async def tool_run_smw_ask(
     # post-filters results, but we can short-circuit here for users with
     # zero namespace access (consistent with vector search behaviour).
     if not user.allowed_namespaces:
-        return {"result": "", "filtered_count": 0}
+        return {SMW_RESULT_KEY: _compact_smw_result({})}
 
     if vector_store:
         # Extract references from the query before hitting the DB
@@ -434,17 +533,29 @@ async def tool_run_smw_ask(
         props_lower = {p.lower(): p for p in known_props}
         cats_lower = {c.lower(): c for c in known_cats}
 
+        suggestions: List[Tuple[str, str]] = []
         # A) Condition properties: [[PropertyName::Value]]
-        for match in prop_conditions:
-            _find_best_match(match, known_props, props_lower, "Property:")
+        # C) Printout properties: |?PropertyName  |?PropertyName=Label  |?PropertyName#fmt
+        for match in prop_conditions + printout_props:
+            suggestion = _suggest_match(match, known_props, props_lower, "Property:")
+            if suggestion:
+                suggestions.append(suggestion)
 
         # B) Category conditions: [[Category:Name]]
         for match in cat_conditions:
-            _find_best_match(match.strip(), known_cats, cats_lower, "Category:")
+            suggestion = _suggest_match(match.strip(), known_cats, cats_lower, "Category:")
+            if suggestion:
+                suggestions.append(suggestion)
 
-        # C) Printout properties: |?PropertyName  |?PropertyName=Label  |?PropertyName#fmt
-        for match in printout_props:
-            _find_best_match(match, known_props, props_lower, "Property:")
+        # Only suggest pages the user can read: the index is filled
+        # regardless of per-page restrictions.
+        if suggestions:
+            readable = set(await readable_subset(
+                [title for title, _ in suggestions], user, client=mw or mw_client,
+            ))
+            for title, message in suggestions:
+                if title in readable:
+                    raise ValueError(message)
 
     client = client or smw_client
     
@@ -458,12 +569,7 @@ async def tool_run_smw_ask(
          if clean_query.lower().startswith("#ask:"):
              clean_query = clean_query[5:].strip()
 
-    # Strip SMW result format parameters (e.g. |format=json, |format=csv).
-    # Our API endpoint evaluates queries via the parser and extracts HTML
-    # with getText(), so SMW format parameters like "json" produce empty
-    # output.  The API already returns structured JSON; the SMW-level
-    # format param is both unnecessary and breaks results.
-    clean_query = re.sub(r"\|format\s*=\s*\w+", "", clean_query)
+    # (|format= needs no stripping: the wiki ignores it and forces its own.)
 
     try:
         result = await client.ask(clean_query, user=user)
@@ -473,6 +579,6 @@ async def tool_run_smw_ask(
         ) from exc
 
     if not isinstance(result, dict):
-         return {"result": str(result)}
+        raise ValueError("SMW ASK query failed: unexpected response shape.")
 
-    return result
+    return {SMW_RESULT_KEY: _compact_smw_result(result)}

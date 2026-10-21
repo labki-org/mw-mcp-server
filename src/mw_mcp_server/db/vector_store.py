@@ -7,13 +7,29 @@ Replaces the previous FAISS-based implementation.
 
 from __future__ import annotations
 
+import logging
 from typing import List, NamedTuple, Tuple, Optional
 from datetime import datetime
 
-from sqlalchemy import select, delete, update, func
+from pgvector.sqlalchemy import HALFVEC
+from sqlalchemy import cast, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Embedding
+from .models import Embedding, EmbeddingJobRecord
+from ..config import settings
+
+logger = logging.getLogger(__name__)
+
+# halfvec HNSW indexes support up to 4000 dimensions (pgvector >= 0.7.0).
+HALFVEC_MAX_DIMS = 4000
+
+# HNSW applies the WHERE clause (wiki_id / namespace) *after* the index scan,
+# so with the default ef_search=40 a small wiki in a shared table can get
+# fewer than k rows back. pgvector >= 0.8 can keep scanning until enough rows
+# pass the filter (hnsw.iterative_scan); older versions only get a larger
+# ef_search. Detected once per process.
+_HNSW_EF_SEARCH_MIN = 100
+_iterative_scan_supported: Optional[bool] = None
 
 
 class PageSyncState(NamedTuple):
@@ -21,6 +37,21 @@ class PageSyncState(NamedTuple):
     content_sha1: Optional[str]
     rev_id: Optional[int]
     embedding_model: Optional[str]
+
+
+def escape_like(value: str) -> str:
+    """Escape LIKE/ILIKE metacharacters so *value* matches literally (escape char ``\\``)."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _version_at_least(version: Optional[str], minimum: Tuple[int, ...]) -> bool:
+    if not version:
+        return False
+    try:
+        parts = tuple(int(p) for p in version.split(".")[: len(minimum)])
+    except ValueError:
+        return False
+    return parts >= minimum
 
 
 class VectorStore:
@@ -182,6 +213,49 @@ class VectorStore:
         result = await self._session.execute(stmt)
         return result.rowcount
 
+    async def _configure_hnsw_scan(self, k: int) -> None:
+        """Tune HNSW for filtered queries for the rest of this transaction."""
+        global _iterative_scan_supported
+        if _iterative_scan_supported is None:
+            version = (
+                await self._session.execute(
+                    text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+                )
+            ).scalar()
+            _iterative_scan_supported = _version_at_least(version, (0, 8))
+            if not _iterative_scan_supported:
+                logger.warning(
+                    "pgvector %s lacks hnsw.iterative_scan (needs >= 0.8.0); filtered "
+                    "vector searches may return fewer than k results.",
+                    version,
+                )
+
+        ef_search = max(_HNSW_EF_SEARCH_MIN, k * 4)
+        # SET LOCAL can't take bind parameters; ef_search is an int we computed.
+        await self._session.execute(text(f"SET LOCAL hnsw.ef_search = {int(ef_search)}"))
+        if _iterative_scan_supported:
+            await self._session.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+
+    async def delete_page_and_pending_job(self, wiki_id: str, page_title: str) -> int:
+        """
+        Delete a page's embeddings *and* any pending embedding job for it.
+
+        The job row is deleted first so this transaction serialises against a
+        worker that is mid-job on the same page: the worker re-locks its job
+        row before writing and discards its result if the row is gone, so an
+        update queued before the delete can't re-insert the page afterwards.
+        Caller commits.
+
+        Returns the number of deleted embedding rows.
+        """
+        await self._session.execute(
+            delete(EmbeddingJobRecord).where(
+                EmbeddingJobRecord.wiki_id == wiki_id,
+                EmbeddingJobRecord.page_title == page_title,
+            )
+        )
+        return await self.delete_page(wiki_id, page_title)
+
     async def search(
         self,
         wiki_id: str,
@@ -208,18 +282,31 @@ class VectorStore:
         List[Tuple[str, Optional[str], int, float]]
             List of (page_title, section_id, namespace, score) tuples.
         """
-        # Build the cosine similarity query using pgvector's <=> operator
-        cosine_distance = Embedding.embedding.cosine_distance(query_embedding)
-        
+        dims = settings.embedding_dimensions
+        exact_distance = Embedding.embedding.cosine_distance(query_embedding)
+
+        if dims > HALFVEC_MAX_DIMS:
+            # No HNSW index is possible; exact scan on the raw vector column.
+            order_distance = exact_distance
+        else:
+            # Must match the indexed expression in migration 0005 exactly
+            # (``embedding::halfvec(N)`` with ``<=>``) or the planner won't
+            # use the HNSW index.
+            order_distance = cast(Embedding.embedding, HALFVEC(dims)).cosine_distance(
+                cast(query_embedding, HALFVEC(dims))
+            )
+            await self._configure_hnsw_scan(k)
+
         stmt = (
             select(
                 Embedding.page_title,
                 Embedding.section_id,
                 Embedding.namespace,
-                (1 - cosine_distance).label("score"),
+                # Report the full-precision score; only the ordering uses halfvec.
+                (1 - exact_distance).label("score"),
             )
             .where(Embedding.wiki_id == wiki_id)
-            .order_by(cosine_distance)
+            .order_by(order_distance)
             .limit(k)
         )
 
@@ -227,7 +314,8 @@ class VectorStore:
             stmt = stmt.where(Embedding.namespace.in_(namespace_filter))
 
         result = await self._session.execute(stmt)
-        rows = result.all()
+        # relaxed_order iterative scans may return slightly out-of-order rows.
+        rows = sorted(result.all(), key=lambda r: r.score, reverse=True)
 
         return [(row.page_title, row.section_id, row.namespace, row.score) for row in rows]
 
@@ -246,7 +334,10 @@ class VectorStore:
             stmt = stmt.where(Embedding.namespace == namespace)
 
         if pattern:
-            stmt = stmt.where(Embedding.page_title.ilike(f"%{pattern}%"))
+            # The pattern is LLM-supplied: match it literally, not as LIKE syntax.
+            stmt = stmt.where(
+                Embedding.page_title.ilike(f"%{escape_like(pattern)}%", escape="\\")
+            )
 
         result = await self._session.execute(stmt)
         return sorted([row[0] for row in result.all()])

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -32,6 +33,7 @@ from .config import settings
 from .core.errors import unhandled_exception_handler
 from .core.middleware import RequestIDLogFilter, RequestIDMiddleware
 from .db import Base, async_engine
+from .db.cleanup import run_periodic_cleanup
 from .embeddings.queue import process_embeddings_worker_task
 
 from .api import (
@@ -123,16 +125,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     worker_task = asyncio.create_task(process_embeddings_worker_task())
     logger.info("Background embedding worker started")
 
+    cleanup_task = asyncio.create_task(run_periodic_cleanup())
+
     yield  # Application runs here
 
     # ---- Shutdown ----
     logger.info("Shutting down mw-mcp-server")
 
+    cleanup_task.cancel()
     worker_task.cancel()
     try:
         await worker_task
     except asyncio.CancelledError:
         logger.info("Background embedding worker cancelled cleanly")
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
     # Close long-lived HTTP clients on the cached singletons.
     await get_llm_client().aclose()
@@ -145,6 +154,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 # ---------------------------------------------------------------------
 # Application Factory (Test-Friendly)
 # ---------------------------------------------------------------------
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _api_docs_enabled() -> bool:
+    """
+    Whether to serve /docs, /redoc and /openapi.json.
+
+    Off by default so production deployments don't publish the full API
+    surface. Enable with ENABLE_API_DOCS=true (read by Settings, and checked
+    in the live environment too so it can be toggled after import).
+    """
+    if settings.enable_api_docs:
+        return True
+    return os.environ.get("ENABLE_API_DOCS", "").strip().lower() in _TRUTHY
+
 
 def create_app() -> FastAPI:
     """
@@ -160,12 +185,14 @@ def create_app() -> FastAPI:
     FastAPI
         Fully configured FastAPI application.
     """
+    docs_enabled = _api_docs_enabled()
+
     app = FastAPI(
         title="mw-mcp-server",
         version="0.1.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
         lifespan=lifespan,
     )
 

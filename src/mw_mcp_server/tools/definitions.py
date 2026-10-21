@@ -124,7 +124,13 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "description": (
                 "Executes a raw Semantic MediaWiki #ask query and returns the structured results. "
                 "Use this for property-based queries and structured data retrieval. "
-                "Note: |format= parameters are automatically stripped (the API returns structured JSON natively)."
+                "Returns `{\"mwassistant-smw\": {rows, printouts, count, truncated, errors, note}}` where each row is "
+                "`{title, <printout label>: value or list of values}`; only pages you can read "
+                "are included. `truncated` is true when more results exist. "
+                "|limit= defaults to 100 and is capped at 500 (use |offset= to page). "
+                "|format= is ignored (results are always structured), so |format=count does not "
+                "count: use `count` with a sufficient |limit=. Property chain printouts (?A.B) "
+                "are not supported."
             ),
             "parameters": {
                 "type": "object",

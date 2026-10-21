@@ -46,8 +46,8 @@ docker-compose up -d
 
 ## Requirements
 
-- Python 3.11+
-- PostgreSQL 16 with pgvector extension
+- Python 3.11+ (the Docker image and CI use 3.12)
+- PostgreSQL 16 with pgvector >= 0.7 (halfvec support; compose pins 0.8.7)
 - Docker (recommended)
 - OpenAI API key
 
@@ -58,9 +58,10 @@ See `.env.example` for all configuration options.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENAI_API_KEY` | Yes | OpenAI API key |
-| `WIKI_CREDS` | Yes | JSON map of wiki credentials (mw_to_mcp_secret, mcp_to_mw_secret) for each wiki ID |
-| `DB_PASSWORD` | Yes | PostgreSQL password |
-| `ADMIN_API_KEY` | Optional | API key for accessing the Usage Stats Dashboard |
+| `WIKI_CREDS` | Yes | JSON map of wiki ID -> `{mw_to_mcp_secret, mcp_to_mw_secret, api_url?}`. `api_url` is optional but recommended: it pins the wiki's `api.php` URL server-side instead of trusting the URL sent by the wiki (see [Deployment Guide](docs/DEPLOYMENT.md#multi-tenant-setup)) |
+| `DB_PASSWORD` | Yes | PostgreSQL password (prod compose refuses to start without it) |
+| `ADMIN_API_KEY` | Optional | API key for the Usage Stats Dashboard; sent in the `x-admin-key` header only |
+| `ENABLE_API_DOCS` | Optional | `true` to serve `/docs`, `/redoc`, `/openapi.json` (default: disabled) |
 
 
 ## API Endpoints
@@ -75,9 +76,10 @@ See `.env.example` for all configuration options.
 | `/embeddings/page` | POST | Update page embedding |
 | `/embeddings/page` | DELETE | Delete page embedding |
 | `/embeddings/stats` | GET | Get embedding statistics |
-| `/stats/usage` | GET | Logic-level usage stats (Admin only) |
-| `/stats/dashboard` | GET | HTML Usage Dashboard (Admin only) |
-| `/health` | GET | Health check |
+| `/stats/usage` | GET | Usage stats (Admin only, `x-admin-key` header) |
+| `/stats/dashboard` | GET | HTML Usage Dashboard (prompts for the admin key) |
+| `/health` | GET | Liveness check |
+| `/health/ready` | GET | Readiness check (database connectivity) |
 
 ## Development
 
@@ -86,8 +88,10 @@ See `.env.example` for all configuration options.
 python -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
-pip install -e ".[dev,test]"
+# Install dependencies (runtime lock + test/lint tooling)
+pip install --require-hashes -r requirements.lock
+pip install -r requirements-dev.txt
+pip install --no-deps -e .
 
 # Start PostgreSQL
 docker-compose up postgres -d
@@ -95,9 +99,19 @@ docker-compose up postgres -d
 # Run server
 uvicorn mw_mcp_server.main:app --reload
 
-# Run tests
+# Run tests / lint / audit
 pytest
+ruff check src/ tests/
+pip-audit -r requirements.lock --require-hashes --disable-pip
 ```
+
+### Dependencies
+
+- `requirements.txt` / `pyproject.toml`: runtime ranges (with security floors).
+- `requirements.lock`: fully pinned + hashed set installed by the Docker image
+  and CI. Regenerate after changing `requirements.txt`:
+  `uv pip compile requirements.txt --universal --python-version 3.11 --generate-hashes -o requirements.lock`
+- `requirements-dev.txt`: test/lint tooling, never shipped in the image.
 
 ## Documentation
 

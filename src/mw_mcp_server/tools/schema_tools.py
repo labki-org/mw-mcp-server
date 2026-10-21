@@ -11,13 +11,23 @@ Each tool returns a structured dict so the LLM receives both:
 The suggestions path is what catches cases like a user asking about "lab members"
 on a wiki that uses "Researcher" / "Person" / "Organizational role" — without
 them, the LLM tends to read "no exact match" as "concept absent" and stops.
+
+The index only knows namespaces, not per-page restrictions, so when a
+``user`` is given every returned title is filtered through MediaWiki's
+read-permission check (see tools/access.py). Callers serving a user must
+pass it.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+from ..auth.models import UserContext
 from ..db import VectorStore
 from ..embeddings.embedder import Embedder
+from .access import filter_readable, readable_subset
 from .pagination import paginated
+
+if TYPE_CHECKING:
+    from ..wiki.api_client import MediaWikiClient
 
 # MediaWiki Constants
 NS_CATEGORY = 14
@@ -33,6 +43,29 @@ SEMANTIC_OVERQUERY_MULTIPLIER = 3
 # When prefix-mode returns fewer hits than this, attach semantic suggestions
 # to help the LLM expand its search.
 SUGGESTION_FALLBACK_THRESHOLD = 3
+
+
+async def _limit_readable(
+    candidates: List[str],
+    limit: int,
+    user: Optional[UserContext],
+    access_client: Optional["MediaWikiClient"],
+) -> Tuple[List[str], bool]:
+    """First ``limit`` candidates the user can read, plus a truncation flag."""
+    if user is None:
+        return candidates[:limit], len(candidates) > limit
+    return await filter_readable(candidates, user, limit, client=access_client)
+
+
+async def _only_readable(
+    titles: List[str],
+    user: Optional[UserContext],
+    access_client: Optional["MediaWikiClient"],
+) -> List[str]:
+    if user is None or not titles:
+        return titles
+    readable = set(await readable_subset(titles, user, client=access_client))
+    return [t for t in titles if t in readable]
 
 
 async def _semantic_namespace_suggestions(
@@ -89,6 +122,8 @@ async def _list_namespace_with_suggestions(
     names: Optional[List[str]],
     limit: int,
     allowed_namespaces: Optional[List[int]],
+    user: Optional[UserContext] = None,
+    access_client: Optional["MediaWikiClient"] = None,
 ) -> Dict[str, Any]:
     """Shared backbone for category / property lookups."""
     namespace_label = prefix_label.rstrip(":")
@@ -108,10 +143,15 @@ async def _list_namespace_with_suggestions(
     # ---- Names mode: existence check with semantic suggestions for misses ----
     if names:
         all_titles = set(await vector_store.get_pages_by_namespace(wiki_id, namespace))
+        indexed = [n for n in names if f"{prefix_label}{n}" in all_titles]
+        # An unreadable page is reported as missing, not as found.
+        readable = set(await _only_readable(
+            [f"{prefix_label}{n}" for n in indexed], user, access_client,
+        ))
         found: List[str] = []
         missing: List[str] = []
         for name in names:
-            if f"{prefix_label}{name}" in all_titles:
+            if f"{prefix_label}{name}" in readable:
                 found.append(name)
             else:
                 missing.append(name)
@@ -126,6 +166,7 @@ async def _list_namespace_with_suggestions(
                 namespace=namespace,
                 exclude={f"{prefix_label}{n}" for n in found},
             )
+            suggestions = await _only_readable(suggestions, user, access_client)
 
         return {
             "found": sorted(f"{prefix_label}{n}" for n in found),
@@ -137,7 +178,7 @@ async def _list_namespace_with_suggestions(
     raw_matches = await vector_store.get_pages_by_namespace(
         wiki_id, namespace, pattern=prefix
     )
-    matches = raw_matches[:limit]
+    matches, truncated = await _limit_readable(raw_matches, limit, user, access_client)
 
     suggestions = []
     # Only run semantic fallback when the user gave us a query-shaped hint
@@ -151,6 +192,7 @@ async def _list_namespace_with_suggestions(
             namespace=namespace,
             exclude=set(matches),
         )
+        suggestions = await _only_readable(suggestions, user, access_client)
 
     extra: Dict[str, Any] = {"suggestions": suggestions}
 
@@ -166,7 +208,7 @@ async def _list_namespace_with_suggestions(
             "embedding index, use `mw_search_pages`."
         )
 
-    return paginated(matches, limit=limit, label="matches", extra=extra)
+    return paginated(matches, limit=limit, label="matches", extra=extra, truncated=truncated)
 
 
 async def tool_get_categories(
@@ -177,6 +219,8 @@ async def tool_get_categories(
     limit: int = 50,
     allowed_namespaces: Optional[List[int]] = None,
     embedder: Optional[Embedder] = None,
+    user: Optional[UserContext] = None,
+    access_client: Optional["MediaWikiClient"] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """
@@ -195,6 +239,8 @@ async def tool_get_categories(
         names=names,
         limit=limit,
         allowed_namespaces=allowed_namespaces,
+        user=user,
+        access_client=access_client,
     )
 
 
@@ -206,6 +252,8 @@ async def tool_get_properties(
     limit: int = 50,
     allowed_namespaces: Optional[List[int]] = None,
     embedder: Optional[Embedder] = None,
+    user: Optional[UserContext] = None,
+    access_client: Optional["MediaWikiClient"] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Look up property pages from the index. Same shape as tool_get_categories."""
@@ -219,6 +267,8 @@ async def tool_get_properties(
         names=names,
         limit=limit,
         allowed_namespaces=allowed_namespaces,
+        user=user,
+        access_client=access_client,
     )
 
 
@@ -229,6 +279,8 @@ async def tool_list_pages(
     prefix: Optional[str] = None,
     limit: int = 50,
     allowed_namespaces: Optional[List[int]] = None,
+    user: Optional[UserContext] = None,
+    access_client: Optional["MediaWikiClient"] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """
@@ -268,15 +320,19 @@ async def tool_list_pages(
     if allowed_namespaces is not None and namespace is None:
         aggregated: List[str] = []
         per_ns_indexed = 0
+        truncated = False
         for ns in sorted(allowed_namespaces):
             if len(aggregated) >= limit:
+                truncated = True
                 break
             rows = await vector_store.get_pages_by_namespace(
                 wiki_id, ns, pattern=prefix
             )
             per_ns_indexed += len(rows)
             remaining = limit - len(aggregated)
-            aggregated.extend(rows[:remaining])
+            readable, more = await _limit_readable(rows, remaining, user, access_client)
+            aggregated.extend(readable)
+            truncated = truncated or more
 
         extra: Dict[str, Any] = {}
         if per_ns_indexed == 0 and not prefix:
@@ -287,7 +343,8 @@ async def tool_list_pages(
                 "batch embed at Special:MWAssistantEmbeddings, or use "
                 "`mw_search_pages` to find pages by keyword regardless of indexing."
             )
-        return paginated(aggregated, limit=limit, extra=extra)
+        return paginated(aggregated, limit=limit, extra=extra, truncated=truncated)
 
     results = await vector_store.get_pages_by_namespace(wiki_id, namespace, pattern=prefix)
-    return paginated(results[:limit], limit=limit)
+    readable, truncated = await _limit_readable(results, limit, user, access_client)
+    return paginated(readable, limit=limit, truncated=truncated)

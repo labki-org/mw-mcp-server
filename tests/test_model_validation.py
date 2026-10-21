@@ -103,3 +103,45 @@ class TestSMWQueryRequestValidation:
     def test_valid_smw_query(self):
         req = SMWQueryRequest(ask="[[Category:Test]]|?Property")
         assert "Category:Test" in req.ask
+
+
+class TestClientRoleAndSizeBounds:
+    """Client-supplied roles and sizes are bounded."""
+
+    @pytest.mark.parametrize("role", ["tool", "function", "developer"])
+    def test_privileged_roles_rejected(self, role):
+        with pytest.raises(ValidationError):
+            ChatMessage(role=role, content="hello")
+
+    def test_system_role_downgraded_to_user(self):
+        """MWAssistant sends editor context as a 'system' message."""
+        msg = ChatMessage(role="system", content="Context:\nfoo")
+        assert msg.role == "user"
+
+    def test_total_request_chars_capped(self):
+        from mw_mcp_server.api.models import MAX_CHAT_REQUEST_CHARS
+
+        per = 100_000
+        n = MAX_CHAT_REQUEST_CHARS // per + 1
+        with pytest.raises(ValidationError, match="Total message content"):
+            ChatRequest(messages=[ChatMessage(role="user", content="x" * per)] * n)
+
+    def test_total_request_at_cap_accepted(self):
+        req = ChatRequest(messages=[ChatMessage(role="user", content="x" * 100_000)] * 2)
+        assert len(req.messages) == 2
+
+    def test_embedding_content_capped(self):
+        from mw_mcp_server.api.models import (
+            EmbeddingUpdatePageRequest,
+            MAX_EMBEDDING_CONTENT_CHARS,
+        )
+
+        EmbeddingUpdatePageRequest(title="T", content="x" * MAX_EMBEDDING_CONTENT_CHARS)
+        with pytest.raises(ValidationError):
+            EmbeddingUpdatePageRequest(title="T", content="x" * (MAX_EMBEDDING_CONTENT_CHARS + 1))
+
+    def test_embedding_title_capped(self):
+        from mw_mcp_server.api.models import EmbeddingDeletePageRequest
+
+        with pytest.raises(ValidationError):
+            EmbeddingDeletePageRequest(title="x" * 513)

@@ -1,4 +1,5 @@
-version: "3.9"
+# DEVELOPMENT compose file. Binds the API to localhost only and falls back to
+# a well-known dev DB password. For production use docker-compose.prod.yml.
 
 services:
   mw-mcp-server:
@@ -10,13 +11,13 @@ services:
     image: mw-mcp-server:latest
 
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
     env_file:
       - .env
 
     environment:
-      - DATABASE_URL=postgresql+asyncpg://mcp:${DB_PASSWORD:-changeme}@postgres:5432/mcp
+      - DATABASE_URL=postgresql+asyncpg://mcp:${DB_PASSWORD:-dev-only-changeme}@postgres:5432/mcp
 
     depends_on:
       postgres:
@@ -28,24 +29,25 @@ services:
     restart: unless-stopped
 
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      # curl is not in the slim image; probe readiness with the stdlib.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 20s
 
   # -------------------------------
   # PostgreSQL with pgvector
   # -------------------------------
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.7-pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
     container_name: mcp-postgres
     restart: unless-stopped
     
     environment:
       POSTGRES_DB: mcp
       POSTGRES_USER: mcp
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dev-only-changeme}
 
     volumes:
       - pgdata:/var/lib/postgresql/data
