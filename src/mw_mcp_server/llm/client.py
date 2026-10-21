@@ -21,10 +21,18 @@ Design Goals
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import random
 from typing import List, Dict, Any, Optional, NamedTuple
 import httpx
 
 from ..config import settings
+
+logger = logging.getLogger("mcp.llm")
+
+# HTTP statuses worth retrying: rate limiting and provider-side failures.
+_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 
 
 # ---------------------------------------------------------------------
@@ -42,6 +50,8 @@ class ChatResult(NamedTuple):
     """Result from an LLM chat completion."""
     message: Dict[str, Any]
     usage: TokenUsage
+    # "stop", "tool_calls", "length" (output truncated), "content_filter", ...
+    finish_reason: Optional[str] = None
 
 
 # ---------------------------------------------------------------------
@@ -64,6 +74,10 @@ class LLMConfigurationError(LLMClientError):
     """Raised when API configuration is invalid."""
 
 
+class LLMContextLengthError(LLMTransportError):
+    """Raised when the provider rejects the request as exceeding the context window."""
+
+
 # ---------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------
@@ -82,11 +96,20 @@ class LLMClient:
         model: Optional[str] = None,
         base_url: Optional[str] = None,
         timeout: float = 60.0,
+        max_retries: Optional[int] = None,
+        retry_base_delay: float = 1.0,
+        retry_max_delay: float = 20.0,
     ):
         self.api_key = api_key or settings.openai_api_key.get_secret_value()
         self.model = model or settings.openai_model
         self.base_url = base_url or "https://api.openai.com/v1"
         self.timeout = timeout
+        self.max_retries = (
+            max_retries if max_retries is not None
+            else int(getattr(settings, "llm_max_retries", 3))
+        )
+        self.retry_base_delay = retry_base_delay
+        self.retry_max_delay = retry_max_delay
         self._client: Optional[httpx.AsyncClient] = None
 
         self._validate_config()
@@ -128,6 +151,8 @@ class LLMClient:
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]],
         temperature: float,
+        tool_choice: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Construct a chat completion request payload."""
         payload: Dict[str, Any] = {
@@ -138,8 +163,82 @@ class LLMClient:
 
         if tools:
             payload["tools"] = tools
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
+
+        if max_tokens:
+            payload["max_completion_tokens"] = max_tokens
 
         return payload
+
+    def _retry_delay(self, attempt: int, response: Optional[httpx.Response]) -> float:
+        """Exponential backoff with jitter, honouring a short Retry-After."""
+        if response is not None:
+            retry_after = response.headers.get("retry-after")
+            if retry_after:
+                try:
+                    return min(self.retry_max_delay, max(0.0, float(retry_after)))
+                except ValueError:
+                    pass
+        delay = min(self.retry_max_delay, self.retry_base_delay * (2 ** attempt))
+        return delay * random.uniform(0.5, 1.0)
+
+    @staticmethod
+    def _is_context_length_error(response: httpx.Response) -> bool:
+        if response.status_code != 400:
+            return False
+        try:
+            error = response.json().get("error") or {}
+        except Exception:
+            return False
+        return error.get("code") == "context_length_exceeded" or (
+            "context length" in str(error.get("message", "")).lower()
+        )
+
+    async def _post_with_retries(
+        self, url: str, payload: Dict[str, Any], headers: Dict[str, str]
+    ) -> httpx.Response:
+        """POST, retrying timeouts/connection errors and 429/5xx (bounded)."""
+        attempt = 0
+        while True:
+            response: Optional[httpx.Response] = None
+            try:
+                response = await self._get_http_client().post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if self._is_context_length_error(exc.response):
+                    raise LLMContextLengthError(
+                        "LLM request exceeds the model's context window."
+                    ) from exc
+                retryable = status in _RETRYABLE_STATUS
+                failure = exc
+            except httpx.TransportError as exc:
+                # Timeouts, connection resets, DNS failures.
+                retryable = True
+                failure = exc
+            except httpx.HTTPError as exc:
+                retryable = False
+                failure = exc
+
+            if not retryable or attempt >= self.max_retries:
+                raise LLMTransportError(
+                    f"LLM transport failure: {type(failure).__name__}"
+                    + (f" (HTTP {response.status_code})" if response is not None else "")
+                ) from failure
+
+            delay = self._retry_delay(attempt, response)
+            attempt += 1
+            logger.warning(
+                "LLM request failed (%s%s); retry %d/%d in %.1fs",
+                type(failure).__name__,
+                f" HTTP {response.status_code}" if response is not None else "",
+                attempt,
+                self.max_retries,
+                delay,
+            )
+            await asyncio.sleep(delay)
 
     # -----------------------------------------------------------------
     # Public API
@@ -151,6 +250,8 @@ class LLMClient:
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.2,
+        tool_choice: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> ChatResult:
         """
         Execute a chat completion request.
@@ -169,6 +270,16 @@ class LLMClient:
         temperature : float
             Sampling temperature.
 
+        tool_choice : Optional[str]
+            OpenAI ``tool_choice`` ("auto", "none", "required"); only sent
+            when tools are provided.
+
+        max_tokens : Optional[int]
+            Cap on generated tokens (sent as ``max_completion_tokens``).
+
+        Retries timeouts, connection errors and HTTP 408/409/429/5xx with
+        bounded exponential backoff (``llm_max_retries``, default 3).
+
         Returns
         -------
         ChatResult
@@ -180,9 +291,13 @@ class LLMClient:
         ------
         LLMConfigurationError
         LLMTransportError
+        LLMContextLengthError
         LLMResponseError
         """
-        payload = self._build_payload(system_prompt, messages, tools, temperature)
+        payload = self._build_payload(
+            system_prompt, messages, tools, temperature,
+            tool_choice=tool_choice, max_tokens=max_tokens,
+        )
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -191,13 +306,7 @@ class LLMClient:
 
         url = f"{self.base_url}/chat/completions"
 
-        try:
-            response = await self._get_http_client().post(url, json=payload, headers=headers)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise LLMTransportError(
-                f"LLM transport failure: {type(exc).__name__}"
-            ) from exc
+        response = await self._post_with_retries(url, payload, headers)
 
         try:
             data = response.json()
@@ -208,10 +317,12 @@ class LLMClient:
         # Defensive response validation
         # -------------------------------------------------------------
         try:
-            message = data["choices"][0]["message"]
+            choice = data["choices"][0]
+            message = choice["message"]
         except Exception as exc:
+            keys = sorted(data) if isinstance(data, dict) else type(data).__name__
             raise LLMResponseError(
-                f"Unexpected LLM response structure: {data}"
+                f"Unexpected LLM response structure (keys: {keys})"
             ) from exc
 
         if not isinstance(message, dict):
@@ -228,5 +339,12 @@ class LLMClient:
             total_tokens=usage_data.get("total_tokens", 0),
         )
 
-        return ChatResult(message=message, usage=usage)
+        finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+        if finish_reason == "length":
+            logger.warning(
+                "LLM output truncated (finish_reason=length, completion_tokens=%d)",
+                usage.completion_tokens,
+            )
+
+        return ChatResult(message=message, usage=usage, finish_reason=finish_reason)
 
