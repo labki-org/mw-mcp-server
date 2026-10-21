@@ -18,9 +18,16 @@ Design Principles
 
 from __future__ import annotations
 
-from typing import List, Dict, Optional
+from typing import Dict, Literal, Optional
+
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class WikiCredentials(BaseModel):
+    """Credentials for a specific MediaWiki instance."""
+    mw_to_mcp_secret: SecretStr
+    mcp_to_mw_secret: SecretStr
 
 
 class Settings(BaseSettings):
@@ -86,9 +93,9 @@ class Settings(BaseSettings):
         description="HMAC secret used to sign JWTs sent to MediaWiki.",
     )
 
-    jwt_algo: str = Field(
+    jwt_algo: Literal["HS256"] = Field(
         default="HS256",
-        description="JWT signing algorithm (must match both sides).",
+        description="JWT signing algorithm (must match both sides; MWAssistant only accepts HS256).",
     )
 
     jwt_ttl_seconds: int = Field(
@@ -221,38 +228,12 @@ class Settings(BaseSettings):
 
     allowed_namespaces_public: str = Field(
         default="0,14",
-        description="Comma-separated list of MediaWiki namespace IDs allowed for public vector search.",
+        description=(
+            "Comma-separated list of MediaWiki namespace IDs allowed for public "
+            "vector search. Currently unused: namespace access comes from the "
+            "per-user 'allowed_namespaces' JWT claim."
+        ),
     )
-
-    allowed_namespaces_public_list: List[int] = Field(
-        default_factory=list,
-        description="Parsed integer namespace IDs derived from allowed_namespaces_public.",
-    )
-
-    # ------------------------------------------------------------------
-    # Validators
-    # ------------------------------------------------------------------
-
-    @field_validator("allowed_namespaces_public_list", mode="before")
-    @classmethod
-    def _parse_allowed_namespaces(cls, v, info):
-        """
-        Parse comma-separated namespace string into integer list.
-        """
-        raw = info.data.get("allowed_namespaces_public", "")
-        namespaces: List[int] = []
-
-        for part in raw.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if not part.isdigit():
-                raise ValueError(
-                    f"Invalid namespace ID '{part}' in allowed_namespaces_public."
-                )
-            namespaces.append(int(part))
-
-        return namespaces
 
 
     # ------------------------------------------------------------------
@@ -318,11 +299,6 @@ class Settings(BaseSettings):
         
         return self
 
-
-class WikiCredentials(BaseModel):
-    """Credentials for a specific MediaWiki instance."""
-    mw_to_mcp_secret: SecretStr
-    mcp_to_mw_secret: SecretStr
 
 
 # ----------------------------------------------------------------------
