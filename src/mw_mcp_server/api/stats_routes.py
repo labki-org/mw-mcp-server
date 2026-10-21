@@ -6,9 +6,9 @@ and a simple HTML dashboard for visualization.
 
 Security
 --------
-All endpoints are protected by `verify_admin` which requires:
-- `x-admin-key` header OR
-- `key` query parameter
+Data endpoints are protected by `verify_admin`, which requires the
+`x-admin-key` header. Query-string keys are deliberately NOT accepted
+(they leak into access logs, browser history and Referer headers).
 
 Metrics Tracked
 ---------------
@@ -20,6 +20,7 @@ Metrics Tracked
 """
 
 import hmac
+import secrets
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
@@ -42,11 +43,10 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 
 async def verify_admin(
     x_admin_key: Optional[str] = Header(None, alias="x-admin-key"),
-    key: Optional[str] = Query(None)
 ):
     """
-    Verify the request is from an admin using the configured API key.
-    Checks header first, then query param.
+    Verify the request is from an admin using the configured API key,
+    supplied via the ``x-admin-key`` header only.
     """
     expected_key = settings.admin_api_key.get_secret_value() if settings.admin_api_key else None
     
@@ -57,9 +57,11 @@ async def verify_admin(
             detail="Admin access is not configured (ADMIN_API_KEY missing)"
         )
 
-    provided_key = x_admin_key or key
-    
-    if not provided_key or not hmac.compare_digest(provided_key, expected_key):
+    provided_key = x_admin_key
+
+    if not provided_key or not hmac.compare_digest(
+        provided_key.encode("utf-8"), expected_key.encode("utf-8")
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing admin API key"
@@ -207,290 +209,301 @@ async def get_usage_stats(
 # Dashboard UI
 # ---------------------------------------------------------------------
 
-@router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard_ui(
-    x_admin_key: Optional[str] = Header(None, alias="x-admin-key"),
-    key: Optional[str] = Query(None)
-):
-    """
-    Serve the admin dashboard HTML.
-    Note: We do NOT use verify_admin dependency here because we want to serve
-    the page even if auth is missing, so the JS can prompt for it.
-    The data endpoints ARE protected.
-    """
-    
-    html_content = """
-<!DOCTYPE html>
+# Chart.js is loaded from a CDN pinned to an exact version with Subresource
+# Integrity. To bump: download the exact file and recompute
+#   curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A
+CHARTJS_URL = "https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
+CHARTJS_SRI = "sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
+
+
+def _dashboard_csp(nonce: str) -> str:
+    return "; ".join(
+        [
+            "default-src 'none'",
+            f"script-src 'nonce-{nonce}' {CHARTJS_URL}",
+            f"style-src 'nonce-{nonce}'",
+            "connect-src 'self'",
+            "img-src 'self' data:",
+            "base-uri 'none'",
+            "form-action 'none'",
+            "frame-ancestors 'none'",
+        ]
+    )
+
+
+_DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MW MCP Admin Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
-        .card { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 1.5rem; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>MW MCP Admin Dashboard</title>
+<script nonce="__NONCE__" src="__CHARTJS_URL__" integrity="__CHARTJS_SRI__" crossorigin="anonymous"></script>
+<style nonce="__NONCE__">
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; padding: 1.5rem; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: #f3f4f6; color: #1f2937; }
+  .wrap { max-width: 80rem; margin: 0 auto 2rem; }
+  .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+  h1 { font-size: 1.875rem; margin: 0; }
+  .muted { color: #6b7280; font-size: .875rem; margin: .25rem 0 0; }
+  .controls { display: flex; gap: 1rem; align-items: center; }
+  select, input { border: 1px solid #d1d5db; border-radius: .375rem; padding: .5rem; background: #fff; font: inherit; }
+  button { font: inherit; cursor: pointer; border: 0; border-radius: .375rem; padding: .5rem 1rem; }
+  .btn-primary { background: #2563eb; color: #fff; width: 100%; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .btn-link { background: none; color: #dc2626; padding: 0; font-size: .875rem; }
+  .grid { display: grid; gap: 1.5rem; grid-template-columns: 1fr; }
+  @media (min-width: 768px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 1024px) { .grid-4 { grid-template-columns: repeat(4, 1fr); }
+                               .grid-2 { grid-template-columns: repeat(2, 1fr); } }
+  .card { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); padding: 1.5rem; }
+  .accent-blue { border-left: 4px solid #3b82f6; } .accent-green { border-left: 4px solid #22c55e; }
+  .accent-purple { border-left: 4px solid #a855f7; } .accent-orange { border-left: 4px solid #f97316; }
+  .card h3 { margin: 0 0 1rem; font-size: 1rem; color: #374151; }
+  .stat-label { margin: 0; color: #6b7280; font-size: .875rem; text-transform: uppercase; font-weight: 600; }
+  .stat-value { margin: .5rem 0 0; font-size: 1.875rem; font-weight: 700; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .875rem; text-align: left; }
+  th { background: #f9fafb; color: #4b5563; text-transform: uppercase; }
+  th, td { padding: .75rem; border-bottom: 1px solid #e5e7eb; }
+  .num { text-align: right; }
+  .modal { position: fixed; inset: 0; background: rgba(17,24,39,.5); display: flex;
+           align-items: center; justify-content: center; z-index: 50; }
+  .modal-box { background: #fff; padding: 1.5rem; border-radius: .5rem; width: 24rem; max-width: 100%; }
+  .modal-box input { width: 100%; margin-bottom: 1rem; }
+  .error { color: #dc2626; font-size: .875rem; min-height: 1.25rem; margin: 0 0 .5rem; }
+  .hidden { display: none; }
+</style>
 </head>
-<body class="p-6">
+<body>
 
-    <!-- Auth Modal -->
-    <div id="authModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center hidden z-50">
-        <div class="bg-white p-6 rounded-lg shadow-xl w-96">
-            <h2 class="text-xl font-bold mb-4">Admin Authentication</h2>
-            <p class="text-gray-600 mb-4 text-sm">Please enter your Admin API Key to continue.</p>
-            <input type="password" id="apiKeyInput" class="w-full border p-2 rounded mb-4" placeholder="Enter API Key">
-            <button onclick="saveKeyAndReload()" class="w-full bg-blue-600 text-white p-2 rounded hover:bg-blue-700">Access Dashboard</button>
-        </div>
-    </div>
+<div id="authModal" class="modal hidden">
+  <form id="authForm" class="modal-box">
+    <h2>Admin Authentication</h2>
+    <p class="muted">Enter the Admin API key. It is kept only for this browser tab.</p>
+    <input type="password" id="apiKeyInput" placeholder="Admin API key" autocomplete="off" required>
+    <p id="authError" class="error"></p>
+    <button type="submit" class="btn-primary">Access Dashboard</button>
+  </form>
+</div>
 
-    <!-- Header -->
-    <div class="max-w-7xl mx-auto mb-8 flex justify-between items-center">
-        <div>
-            <h1 class="text-3xl font-bold text-gray-800">Usage Statistics</h1>
-            <p class="text-gray-500 text-sm mt-1">Admin Dashboard</p>
-        </div>
-        <div class="flex gap-4">
-            <select id="timeRange" onchange="fetchData()" class="border p-2 rounded bg-white shadow-sm">
-                <option value="7">Last 7 Days</option>
-                <option value="30" selected>Last 30 Days</option>
-                <option value="90">Last 90 Days</option>
-            </select>
-            <button onclick="logout()" class="text-red-600 text-sm hover:underline">Logout</button>
-        </div>
-    </div>
+<div class="wrap header">
+  <div>
+    <h1>Usage Statistics</h1>
+    <p class="muted">Admin Dashboard</p>
+  </div>
+  <div class="controls">
+    <select id="timeRange">
+      <option value="7">Last 7 Days</option>
+      <option value="30" selected>Last 30 Days</option>
+      <option value="90">Last 90 Days</option>
+    </select>
+    <button id="logoutBtn" type="button" class="btn-link">Logout</button>
+  </div>
+</div>
 
-    <!-- Dashboard Grid -->
-    <div class="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <!-- Summary Cards -->
-        <div class="card border-l-4 border-blue-500">
-            <h3 class="text-gray-500 text-sm uppercase font-semibold">Total Tokens</h3>
-            <p class="text-3xl font-bold text-gray-800 mt-2" id="totalTokens">-</p>
-        </div>
-        <div class="card border-l-4 border-green-500">
-            <h3 class="text-gray-500 text-sm uppercase font-semibold">Active Users</h3>
-            <p class="text-3xl font-bold text-gray-800 mt-2" id="totalUsers">-</p>
-        </div>
-        <div class="card border-l-4 border-purple-500">
-            <h3 class="text-gray-500 text-sm uppercase font-semibold">Chat Sessions</h3>
-            <p class="text-3xl font-bold text-gray-800 mt-2" id="totalSessions">-</p>
-        </div>
-        <div class="card border-l-4 border-orange-500">
-            <h3 class="text-gray-500 text-sm uppercase font-semibold">Total Embeddings</h3>
-            <p class="text-3xl font-bold text-gray-800 mt-2" id="totalEmbeddings">-</p>
-        </div>
-    </div>
+<div class="wrap grid grid-4">
+  <div class="card accent-blue"><p class="stat-label">Total Tokens</p><p class="stat-value" id="totalTokens">-</p></div>
+  <div class="card accent-green"><p class="stat-label">Active Users</p><p class="stat-value" id="totalUsers">-</p></div>
+  <div class="card accent-purple"><p class="stat-label">Chat Sessions</p><p class="stat-value" id="totalSessions">-</p></div>
+  <div class="card accent-orange"><p class="stat-label">Total Embeddings</p><p class="stat-value" id="totalEmbeddings">-</p></div>
+</div>
 
-    <!-- Charts Area -->
-    <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        <div class="card">
-            <h3 class="font-bold text-gray-700 mb-4">Token Usage by Tenant</h3>
-            <canvas id="tokensChart"></canvas>
-        </div>
-        <div class="card">
-            <h3 class="font-bold text-gray-700 mb-4">Activity Breakdown</h3>
-            <canvas id="activityChart"></canvas>
-        </div>
-    </div>
+<div class="wrap grid grid-2">
+  <div class="card"><h3>Token Usage by Tenant</h3><canvas id="tokensChart"></canvas></div>
+  <div class="card"><h3>Activity Breakdown</h3><canvas id="activityChart"></canvas></div>
+</div>
 
-    <!-- Data Table -->
-    <div class="max-w-7xl mx-auto card overflow-hidden">
-        <h3 class="font-bold text-gray-700 mb-4">Tenant Details</h3>
-        <div class="overflow-x-auto">
-            <table class="w-full text-left border-collapse">
-                <thead>
-                    <tr class="border-b bg-gray-50 text-gray-600 text-sm uppercase">
-                        <th class="p-3">Tenant (Wiki ID)</th>
-                        <th class="p-3 text-right">Tokens</th>
-                        <th class="p-3 text-right">Sessions</th>
-                        <th class="p-3 text-right">Messages</th>
-                        <th class="p-3 text-right">Users</th>
-                        <th class="p-3 text-right">Embeddings</th>
-                    </tr>
-                </thead>
-                <tbody id="statsTableBody" class="text-gray-700 text-sm">
-                    <!-- Rows injected by JS -->
-                </tbody>
-            </table>
-        </div>
-    </div>
+<div class="wrap card">
+  <h3>Tenant Details</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Tenant (Wiki ID)</th><th class="num">Tokens</th><th class="num">Sessions</th>
+          <th class="num">Messages</th><th class="num">Users</th><th class="num">Embeddings</th>
+        </tr>
+      </thead>
+      <tbody id="statsTableBody"></tbody>
+    </table>
+  </div>
+</div>
 
-    <script>
-        const API_BASE = '/stats/usage';
-        let charts = {};
+<script nonce="__NONCE__">
+(function () {
+  'use strict';
+  const API_BASE = '/stats/usage';
+  const STORAGE_KEY = 'mcp_admin_api_key';
+  const charts = {};
+  let apiKey = null;
 
-        // --- Auth Logic ---
-        function getApiKey() {
-            // Check URL param first
-            const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.has('key')) return urlParams.get('key');
-            // Check LocalStorage
-            return localStorage.getItem('admin_api_key');
-        }
+  // The key is sent only in the x-admin-key header. It is held in memory and
+  // mirrored to sessionStorage (cleared when the tab closes), never in
+  // localStorage or the URL.
+  function loadKey() {
+    try { apiKey = sessionStorage.getItem(STORAGE_KEY); } catch (e) { apiKey = null; }
+    return apiKey;
+  }
+  function storeKey(key) {
+    apiKey = key;
+    try { sessionStorage.setItem(STORAGE_KEY, key); } catch (e) { /* memory only */ }
+  }
+  function clearKey() {
+    apiKey = null;
+    try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+  }
 
-        function checkAuth() {
-            const key = getApiKey();
-            if (!key) {
-                document.getElementById('authModal').classList.remove('hidden');
-                return false;
-            }
-            return true;
-        }
+  function showAuth(message) {
+    document.getElementById('authError').textContent = message || '';
+    document.getElementById('authModal').classList.remove('hidden');
+    document.getElementById('apiKeyInput').focus();
+  }
+  function hideAuth() {
+    document.getElementById('authModal').classList.add('hidden');
+    document.getElementById('apiKeyInput').value = '';
+  }
 
-        function saveKeyAndReload() {
-            const key = document.getElementById('apiKeyInput').value;
-            if (key) {
-                localStorage.setItem('admin_api_key', key);
-                // Reload without query param if possible to clean URL, or just reload
-                window.location.reload();
-            }
-        }
+  async function fetchData() {
+    if (!apiKey) { showAuth(); return; }
+    const days = encodeURIComponent(document.getElementById('timeRange').value);
+    try {
+      const response = await fetch(API_BASE + '?days=' + days, {
+        headers: { 'x-admin-key': apiKey },
+        cache: 'no-store',
+        credentials: 'omit',
+      });
+      if (response.status === 403) {
+        clearKey();
+        showAuth('Invalid API key.');
+        return;
+      }
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      renderDashboard(await response.json());
+    } catch (err) {
+      console.error(err);
+      alert('Error loading dashboard data');
+    }
+  }
 
-        function logout() {
-            localStorage.removeItem('admin_api_key');
-            window.location.href = window.location.pathname; // strip query params
-        }
+  function fmt(n) { return Number(n || 0).toLocaleString(); }
 
-        // --- Data Fetching ---
-        async function fetchData() {
-            if (!checkAuth()) return;
-            
-            const days = document.getElementById('timeRange').value;
-            const key = getApiKey();
+  function cell(text, numeric) {
+    const td = document.createElement('td');
+    td.textContent = text;  // textContent: tenant IDs are never parsed as HTML
+    if (numeric) td.className = 'num';
+    return td;
+  }
 
-            try {
-                const response = await fetch(`${API_BASE}?days=${days}`, {
-                    headers: { 'x-admin-key': key }
-                });
+  function renderDashboard(data) {
+    const tenants = data.tenants || [];
+    let totalTokens = 0, totalUsers = 0, totalSessions = 0, totalEmbeddings = 0;
+    tenants.forEach(function (t) {
+      totalTokens += t.total_tokens;
+      totalUsers += t.active_users;  // per-tenant distinct users, summed
+      totalSessions += t.session_count;
+      totalEmbeddings += t.embedding_count;
+    });
+    document.getElementById('totalTokens').textContent = fmt(totalTokens);
+    document.getElementById('totalUsers').textContent = fmt(totalUsers);
+    document.getElementById('totalSessions').textContent = fmt(totalSessions);
+    document.getElementById('totalEmbeddings').textContent = fmt(totalEmbeddings);
 
-                if (response.status === 403) {
-                    alert('Invalid API Key. Please logout and try again.');
-                    logout();
-                    return;
-                }
-                
-                if (!response.ok) throw new Error('Failed to fetch data');
+    renderCharts(tenants);
 
-                const data = await response.json();
-                renderDashboard(data);
-                
-            } catch (err) {
-                console.error(err);
-                alert('Error loading dashboard data');
-            }
-        }
+    const tbody = document.getElementById('statsTableBody');
+    tbody.replaceChildren();
+    tenants.forEach(function (t) {
+      const tr = document.createElement('tr');
+      tr.append(
+        cell(String(t.wiki_id), false),
+        cell(fmt(t.total_tokens), true),
+        cell(fmt(t.session_count), true),
+        cell(fmt(t.message_count), true),
+        cell(fmt(t.active_users), true),
+        cell(fmt(t.embedding_count), true)
+      );
+      tbody.appendChild(tr);
+    });
+  }
 
-        // --- Rendering ---
-        function renderDashboard(data) {
-            const tenants = data.tenants;
+  function renderCharts(tenants) {
+    if (typeof Chart === 'undefined') return;
+    const labels = tenants.map(function (t) { return String(t.wiki_id); });
 
-            // Update Summary Cards
-            let totalTokens = 0, totalUsers = 0, totalSessions = 0, totalEmbeddings = 0;
-            tenants.forEach(t => {
-                totalTokens += t.total_tokens;
-                totalUsers += t.active_users; // Note: this is sum of distinct users PER tenant, so global unique might be slightly lower if users cross wikis, but good enough.
-                totalSessions += t.session_count;
-                totalEmbeddings += t.embedding_count;
-            });
+    if (charts.tokens) charts.tokens.destroy();
+    charts.tokens = new Chart(document.getElementById('tokensChart'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'Prompt Tokens', data: tenants.map(function (t) { return t.prompt_tokens; }), backgroundColor: '#60A5FA' },
+          { label: 'Completion Tokens', data: tenants.map(function (t) { return t.completion_tokens; }), backgroundColor: '#3B82F6' }
+        ]
+      },
+      options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true } } }
+    });
 
-            document.getElementById('totalTokens').innerText = totalTokens.toLocaleString();
-            document.getElementById('totalUsers').innerText = totalUsers.toLocaleString();
-            document.getElementById('totalSessions').innerText = totalSessions.toLocaleString();
-            document.getElementById('totalEmbeddings').innerText = totalEmbeddings.toLocaleString();
+    if (charts.activity) charts.activity.destroy();
+    charts.activity = new Chart(document.getElementById('activityChart'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'Sessions', data: tenants.map(function (t) { return t.session_count; }), backgroundColor: '#A855F7' },
+          { label: 'Messages', data: tenants.map(function (t) { return t.message_count; }), backgroundColor: '#F97316' }
+        ]
+      },
+      options: { responsive: true }
+    });
+  }
 
-            // Render Charts
-            renderCharts(tenants);
-
-            // Render Table
-            const tbody = document.getElementById('statsTableBody');
-            tbody.innerHTML = tenants.map(t => `
-                <tr class="border-b hover:bg-gray-50">
-                    <td class="p-3 font-medium">${t.wiki_id}</td>
-                    <td class="p-3 text-right">${t.total_tokens.toLocaleString()}</td>
-                    <td class="p-3 text-right">${t.session_count.toLocaleString()}</td>
-                    <td class="p-3 text-right">${t.message_count.toLocaleString()}</td>
-                    <td class="p-3 text-right">${t.active_users.toLocaleString()}</td>
-                    <td class="p-3 text-right">${t.embedding_count.toLocaleString()}</td>
-                </tr>
-            `).join('');
-        }
-
-        function renderCharts(tenants) {
-            const labels = tenants.map(t => t.wiki_id);
-            
-            // 1. Token Chart
-            const ctxTokens = document.getElementById('tokensChart').getContext('2d');
-            if (charts.tokens) charts.tokens.destroy();
-            
-            charts.tokens = new Chart(ctxTokens, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: 'Prompt Tokens',
-                            data: tenants.map(t => t.prompt_tokens),
-                            backgroundColor: '#60A5FA'
-                        },
-                        {
-                            label: 'Completion Tokens',
-                            data: tenants.map(t => t.completion_tokens),
-                            backgroundColor: '#3B82F6'
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    scales: {
-                        x: { stacked: true },
-                        y: { stacked: true }
-                    }
-                }
-            });
-
-            // 2. Activity Chart
-            const ctxActivity = document.getElementById('activityChart').getContext('2d');
-            if (charts.activity) charts.activity.destroy();
-
-            charts.activity = new Chart(ctxActivity, {
-                type: 'bar', // grouped bar
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: 'Sessions',
-                            data: tenants.map(t => t.session_count),
-                            backgroundColor: '#A855F7'
-                        },
-                        {
-                            label: 'Messages',
-                            data: tenants.map(t => t.message_count),
-                            backgroundColor: '#F97316'
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true
-                }
-            });
-        }
-
-        // Init
-        document.addEventListener('DOMContentLoaded', () => {
-             // Check if we need to auto-login from URL
-            const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.has('key')) {
-                localStorage.setItem('admin_api_key', urlParams.get('key'));
-            }
-            
-            if (checkAuth()) {
-                fetchData();
-            }
-        });
-
-    </script>
+  document.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('authForm').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      const key = document.getElementById('apiKeyInput').value;
+      if (!key) return;
+      storeKey(key);
+      hideAuth();
+      fetchData();
+    });
+    document.getElementById('timeRange').addEventListener('change', fetchData);
+    document.getElementById('logoutBtn').addEventListener('click', function () {
+      clearKey();
+      showAuth();
+    });
+    if (loadKey()) { fetchData(); } else { showAuth(); }
+  });
+})();
+</script>
 </body>
 </html>
+"""
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_ui() -> HTMLResponse:
     """
-    return html_content
+    Serve the admin dashboard HTML.
+
+    The page itself is static and contains no data, so it is served without
+    auth; the JS prompts for the admin key and sends it in the
+    ``x-admin-key`` header to the protected ``/stats/usage`` endpoint.
+    A strict nonce-based Content-Security-Policy is attached.
+    """
+    nonce = secrets.token_urlsafe(16)
+    html = (
+        _DASHBOARD_HTML.replace("__NONCE__", nonce)
+        .replace("__CHARTJS_URL__", CHARTJS_URL)
+        .replace("__CHARTJS_SRI__", CHARTJS_SRI)
+    )
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Content-Security-Policy": _dashboard_csp(nonce),
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+        },
+    )
