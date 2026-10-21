@@ -15,7 +15,7 @@ from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import cast, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Embedding
+from .models import Embedding, EmbeddingJobRecord
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -230,6 +230,26 @@ class VectorStore:
         await self._session.execute(text(f"SET LOCAL hnsw.ef_search = {int(ef_search)}"))
         if _iterative_scan_supported:
             await self._session.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+
+    async def delete_page_and_pending_job(self, wiki_id: str, page_title: str) -> int:
+        """
+        Delete a page's embeddings *and* any pending embedding job for it.
+
+        The job row is deleted first so this transaction serialises against a
+        worker that is mid-job on the same page: the worker re-locks its job
+        row before writing and discards its result if the row is gone, so an
+        update queued before the delete can't re-insert the page afterwards.
+        Caller commits.
+
+        Returns the number of deleted embedding rows.
+        """
+        await self._session.execute(
+            delete(EmbeddingJobRecord).where(
+                EmbeddingJobRecord.wiki_id == wiki_id,
+                EmbeddingJobRecord.page_title == page_title,
+            )
+        )
+        return await self.delete_page(wiki_id, page_title)
 
     async def search(
         self,
