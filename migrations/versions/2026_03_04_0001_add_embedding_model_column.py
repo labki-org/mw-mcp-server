@@ -1,7 +1,7 @@
 """Add embedding_model column to embedding table
 
 Revision ID: 0001
-Revises:
+Revises: 0000
 Create Date: 2026-03-04
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '0001'
-down_revision: Union[str, None] = None
+down_revision: Union[str, None] = '0000'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
