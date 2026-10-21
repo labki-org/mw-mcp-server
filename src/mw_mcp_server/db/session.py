@@ -21,6 +21,9 @@ async_engine = create_async_engine(
     settings.database_url,
     echo=False,  # Set True for SQL debugging
     pool_pre_ping=True,
+    # Keep bound parameters (page content, chat text) out of exception
+    # messages, which end up in logs and in embedding_job.last_error.
+    hide_parameters=True,
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_max_overflow,
 )

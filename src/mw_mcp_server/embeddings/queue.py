@@ -16,10 +16,15 @@ Guarantees
 - **Bounded retries.** Transient failures (OpenAI 429/5xx/timeouts, DB
   hiccups) are retried with capped exponential backoff, then dropped with an
   error log. The wiki can re-embed via Special:MWAssistantEmbeddings.
-- **Back-pressure instead of silent loss.** When the queue is at capacity a
-  *new* page is rejected with ``QueueFullError`` (HTTP 503 at the route) so
-  the wiki job retries later; updates to an already-pending page are always
-  accepted since they don't grow the queue.
+- **Back-pressure instead of silent loss.** When a wiki is at its pending
+  cap (or the global safety cap is hit) a *new* page is rejected with
+  ``QueueFullError`` (HTTP 503 at the route) so the wiki job retries later;
+  updates to an already-pending page are always accepted since they don't
+  grow the queue.
+- **Tenant fairness.** Claims round-robin across wikis, so one wiki's bulk
+  re-embed can't starve or lock out the others.
+- **No content in errors.** Failures are recorded as exception class names
+  and HTTP statuses only (see ``describe_error``).
 """
 from __future__ import annotations
 
@@ -27,12 +32,15 @@ import asyncio
 import hashlib
 import logging
 import random
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
+import httpx
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -96,10 +104,19 @@ class EmbeddingQueue:
         self,
         maxsize: int | None = None,
         session_factory: Optional[SessionFactory] = None,
+        global_maxsize: int | None = None,
     ):
+        # Per-wiki capacity.
         self.maxsize = maxsize if maxsize is not None else settings.embedding_queue_max_size
+        # Safety cap across all wikis.
+        self.global_maxsize = (
+            global_maxsize if global_maxsize is not None
+            else int(_setting("embedding_queue_global_max_size", self.maxsize * 10))
+        )
         self._session_factory = session_factory or AsyncSessionLocal
         self._wakeup: Optional[asyncio.Event] = None
+        # wiki_id -> monotonic time it was last served, for round-robin claims.
+        self._last_served: dict[str, float] = {}
 
     # -----------------------------------------------------------------
     # Producer side
@@ -108,12 +125,13 @@ class EmbeddingQueue:
     async def enqueue(self, job: EmbeddingJob) -> int:
         """Queue (or replace) the pending operation for a page.
 
-        Returns the number of pending jobs after the call.
+        Returns the number of pending jobs for the job's wiki after the call.
 
         Raises
         ------
         QueueFullError
-            If the page isn't already pending and the queue is at capacity.
+            If the page isn't already pending and either its wiki is at
+            ``maxsize`` pending jobs or the whole queue is at ``global_maxsize``.
         """
         async with self._session_factory() as session:
             already_pending = (
@@ -123,18 +141,30 @@ class EmbeddingQueue:
                     .where(EmbeddingJobRecord.page_title == job.title)
                 )
             ).scalar_one_or_none() is not None
-            pending = (
+            wiki_pending = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(EmbeddingJobRecord)
+                    .where(EmbeddingJobRecord.wiki_id == job.wiki_id)
+                )
+            ).scalar_one()
+            total_pending = (
                 await session.execute(select(func.count()).select_from(EmbeddingJobRecord))
             ).scalar_one()
 
-            # The capacity check is advisory (concurrent enqueues can overshoot
-            # by a few rows); its purpose is back-pressure, not a hard bound.
-            if not already_pending and pending >= self.maxsize:
+            # Capacity is per wiki so one tenant's bulk re-embed can't block
+            # the others, plus a global safety cap. Both are advisory
+            # (concurrent enqueues can overshoot by a few rows); the purpose
+            # is back-pressure, not a hard bound. Deletes are never refused.
+            if not already_pending and job.op != JOB_OP_DELETE and (
+                wiki_pending >= self.maxsize or total_pending >= self.global_maxsize
+            ):
                 logger.warning(
-                    "Embedding queue full (%d/%d); rejecting %s:%s",
-                    pending, self.maxsize, job.wiki_id, job.title,
+                    "Embedding queue full (wiki %s: %d/%d, total: %d/%d); rejecting %s",
+                    job.wiki_id, wiki_pending, self.maxsize,
+                    total_pending, self.global_maxsize, job.title,
                 )
-                raise QueueFullError(f"Embedding queue is full ({pending} pending)")
+                raise QueueFullError(f"Embedding queue is full ({wiki_pending} pending)")
 
             values = dict(
                 op=job.op,
@@ -167,7 +197,7 @@ class EmbeddingQueue:
             await session.commit()
 
         self._notify()
-        size = pending if already_pending else pending + 1
+        size = wiki_pending if already_pending else wiki_pending + 1
         logger.info(f"Job enqueued: {job.title} (Queue size: {size})")
         return size
 
@@ -182,30 +212,57 @@ class EmbeddingQueue:
     # -----------------------------------------------------------------
 
     async def claim_next(self) -> Optional[ClaimedJob]:
-        """Lease the next due job, or return None if nothing is due."""
+        """Lease the next due job, or return None if nothing is due.
+
+        Fair across tenants: take the oldest due job of each wiki, then serve
+        the wiki that was served least recently (round-robin), so one wiki's
+        backlog can't starve the others.
+        """
         lease = timedelta(seconds=_setting("embedding_job_lease_seconds", 600))
-        async with self._session_factory() as session:
-            due = (
-                select(EmbeddingJobRecord.id)
-                .where(EmbeddingJobRecord.next_attempt_at <= func.now())
-                .where(
-                    (EmbeddingJobRecord.leased_until.is_(None))
-                    | (EmbeddingJobRecord.leased_until < func.now())
-                )
-                .order_by(EmbeddingJobRecord.next_attempt_at, EmbeddingJobRecord.id)
-                .limit(1)
-                .with_for_update(skip_locked=True)
-                .scalar_subquery()
+        claimable = (
+            (EmbeddingJobRecord.next_attempt_at <= func.now())
+            & (
+                EmbeddingJobRecord.leased_until.is_(None)
+                | (EmbeddingJobRecord.leased_until < func.now())
             )
-            row = (
-                await session.execute(
-                    update(EmbeddingJobRecord)
-                    .where(EmbeddingJobRecord.id == due)
-                    .values(leased_until=func.now() + lease)
-                    .returning(EmbeddingJobRecord)
+        )
+
+        row = None
+        async with self._session_factory() as session:
+            # A few rounds in case another worker grabs our pick first.
+            for _ in range(5):
+                candidates = (
+                    await session.execute(
+                        select(EmbeddingJobRecord.id, EmbeddingJobRecord.wiki_id)
+                        .where(claimable)
+                        .distinct(EmbeddingJobRecord.wiki_id)
+                        .order_by(
+                            EmbeddingJobRecord.wiki_id,
+                            EmbeddingJobRecord.next_attempt_at,
+                            EmbeddingJobRecord.id,
+                        )
+                    )
+                ).all()
+                if not candidates:
+                    break
+                job_id, wiki_id = min(
+                    candidates, key=lambda c: (self._last_served.get(c.wiki_id, 0.0), c.id)
                 )
-            ).scalar_one_or_none()
-            await session.commit()
+                # The WHERE is re-evaluated under the row lock, so only one
+                # worker can win the lease even without SKIP LOCKED.
+                row = (
+                    await session.execute(
+                        update(EmbeddingJobRecord)
+                        .where(EmbeddingJobRecord.id == job_id)
+                        .where(claimable)
+                        .values(leased_until=func.now() + lease)
+                        .returning(EmbeddingJobRecord)
+                    )
+                ).scalar_one_or_none()
+                await session.commit()
+                if row is not None:
+                    self._last_served[wiki_id] = time.monotonic()
+                    break
 
         if row is None:
             return None
@@ -264,7 +321,7 @@ class EmbeddingQueue:
         max_attempts = _setting("embedding_job_max_attempts", 6)
         attempts = claimed.attempts + 1
         retryable = _is_retryable(exc)
-        error = f"{type(exc).__name__}: {exc}"[:2000]
+        error = describe_error(exc)
 
         async with self._session_factory() as session:
             superseded = not await self.lock_if_current(session, claimed)
@@ -329,6 +386,26 @@ def backoff_seconds(attempt: int) -> float:
     cap = float(_setting("embedding_job_backoff_max_seconds", 900.0))
     delay = min(cap, base * (2 ** max(0, attempt - 1)))
     return delay * random.uniform(0.8, 1.2)
+
+
+def describe_error(exc: BaseException) -> str:
+    """Short, content-free description of a failure for logs and ``last_error``.
+
+    Never includes ``str(exc)``: SQLAlchemy errors embed statement parameters
+    (i.e. page content) and provider errors can echo request/response bodies.
+    """
+    name = type(exc).__name__
+    cause = exc.__cause__
+    if isinstance(exc, DBAPIError) and exc.orig is not None:
+        return f"{name}({type(exc.orig).__name__})"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{name}(HTTP {exc.response.status_code})"
+    if isinstance(exc, EmbeddingError):
+        if isinstance(cause, httpx.HTTPStatusError):
+            return f"{name}(HTTP {cause.response.status_code})"
+        if cause is not None:
+            return f"{name}({type(cause).__name__})"
+    return name
 
 
 def _is_retryable(exc: BaseException) -> bool:

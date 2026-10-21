@@ -24,6 +24,7 @@ from mw_mcp_server.embeddings.queue import (
     QueueFullError,
     _process_single_job,
     backoff_seconds,
+    describe_error,
     process_embeddings_worker_task,
 )
 
@@ -114,6 +115,23 @@ def test_transient_http_errors_are_retryable():
     assert not _is_transient_http_error(status_error(401))
 
 
+def test_describe_error_never_includes_content():
+    from sqlalchemy.exc import IntegrityError
+
+    secret = "SECRET PAGE CONTENT"
+    db_exc = IntegrityError("INSERT ...", {"content": secret}, ValueError(secret))
+    assert secret not in describe_error(db_exc)
+    assert describe_error(db_exc) == "IntegrityError(ValueError)"
+
+    req = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
+    resp = httpx.Response(429, request=req, text=secret)
+    http_exc = httpx.HTTPStatusError(secret, request=req, response=resp)
+    wrapped = EmbeddingError("Embedding generation failed", retryable=True)
+    wrapped.__cause__ = http_exc
+    assert describe_error(wrapped) == "EmbeddingError(HTTP 429)"
+    assert describe_error(RuntimeError(secret)) == "RuntimeError"
+
+
 # ---------------------------------------------------------------------
 # DB-backed tests
 # ---------------------------------------------------------------------
@@ -141,6 +159,39 @@ async def test_full_queue_rejects_new_pages_but_accepts_updates(pg_session_facto
     # Replacing a pending page doesn't grow the queue, so it's accepted.
     assert await q.enqueue(_make_job("A", "newer")) == 2
     assert {r.page_title for r in await _job_rows(pg_session_factory)} == {"A", "B"}
+
+
+async def test_queue_cap_is_per_wiki(pg_session_factory):
+    """One wiki filling its share must not block another wiki."""
+    q = EmbeddingQueue(maxsize=2, global_maxsize=100, session_factory=pg_session_factory)
+    await q.enqueue(_make_job("A"))
+    await q.enqueue(_make_job("B"))
+    with pytest.raises(QueueFullError):
+        await q.enqueue(_make_job("C"))
+
+    other = EmbeddingJob(wiki_id="other-wiki", title="X", content="x")
+    assert await q.enqueue(other) == 1
+
+
+async def test_global_safety_cap(pg_session_factory):
+    q = EmbeddingQueue(maxsize=10, global_maxsize=2, session_factory=pg_session_factory)
+    await q.enqueue(_make_job("A"))
+    await q.enqueue(EmbeddingJob(wiki_id="other-wiki", title="X", content="x"))
+    with pytest.raises(QueueFullError):
+        await q.enqueue(EmbeddingJob(wiki_id="third-wiki", title="Y", content="y"))
+
+
+async def test_claims_round_robin_across_wikis(pg_session_factory):
+    q = EmbeddingQueue(maxsize=100, session_factory=pg_session_factory)
+    for i in range(5):
+        await q.enqueue(_make_job(f"Big{i}"))
+    await q.enqueue(EmbeddingJob(wiki_id="small-wiki", title="S", content="s"))
+
+    first = await q.claim_next()
+    second = await q.claim_next()
+    # The small wiki is served right after the first big-wiki job, not after
+    # the whole backlog.
+    assert {first.job.wiki_id, second.job.wiki_id} == {WIKI, "small-wiki"}
 
 
 async def test_worker_embeds_page_and_removes_job(pg_session_factory):
@@ -242,7 +293,7 @@ async def test_retryable_failure_is_rescheduled_with_backoff(pg_session_factory)
     await q.enqueue(_make_job("A"))
     claimed = await q.claim_next()
 
-    exc = EmbeddingError("429", retryable=True)
+    exc = EmbeddingError("Embedding generation failed", retryable=True)
     with pytest.raises(EmbeddingError):
         await _process_single_job(claimed, FakeEmbedder(exc=exc), q)
     await q.record_failure(claimed, exc)
@@ -250,7 +301,7 @@ async def test_retryable_failure_is_rescheduled_with_backoff(pg_session_factory)
     [row] = await _job_rows(pg_session_factory)
     assert row.attempts == 1
     assert row.leased_until is None
-    assert "429" in row.last_error
+    assert row.last_error == "EmbeddingError"
     async with pg_session_factory() as s:
         assert row.next_attempt_at > (await s.execute(select(func.now()))).scalar()
     # Not due yet.
