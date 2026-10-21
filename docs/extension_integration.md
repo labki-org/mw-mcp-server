@@ -74,6 +74,14 @@ When the MCP server makes requests back to MediaWiki (e.g., to fetch page conten
 | `iat` | number | Yes | Issued at timestamp |
 | `exp` | number | Yes | Expiration timestamp (`iat + 30`) |
 | `scope` | array | Yes | Operations requested (e.g., `["page_read"]`) |
+| `user` | string | When acting for a user | MediaWiki username the request is made on behalf of |
+| `user_id` | number | When acting for a user | MediaWiki user ID of that user |
+| `wiki_id` | string | Yes (new) | Tenant the token was minted for; the wiki should reject tokens for another `wiki_id` |
+
+`user`, `user_id` and `wiki_id` are enforced by MWAssistant as shipped with
+labki-platform >= v0.4.2. Older MWAssistant `JWTVerifier` releases validate only
+`iss`, `aud`, `iat`, `exp` and `scope` and ignore any additional claims, so they
+continue to accept these tokens (without the extra binding).
 
 **Example JWT Payload (MCP → MW):**
 ```json
@@ -82,9 +90,18 @@ When the MCP server makes requests back to MediaWiki (e.g., to fetch page conten
   "aud": "MWAssistant",
   "iat": 1702345678,
   "exp": 1702345708,
-  "scope": ["page_read"]
+  "scope": ["page_read"],
+  "user": "AdminUser",
+  "user_id": 1,
+  "wiki_id": "my-corporate-wiki"
 }
 ```
+
+### Pinning the wiki API URL
+
+Each `WIKI_CREDS` entry may set `api_url` (optional, recommended). When set,
+the server uses it for all MCP -> MW calls for that tenant and ignores the API
+URL supplied by the wiki; otherwise the wiki-supplied URL is used as before.
 
 
 ## Endpoints
