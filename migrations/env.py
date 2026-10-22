@@ -20,8 +20,10 @@ from mw_mcp_server.config import settings
 # Alembic Config object
 config = context.config
 
-# Set up Python logging from alembic.ini
-if config.config_file_name is not None:
+# Set up Python logging from alembic.ini, but only for the alembic CLI.
+# When the app runs migrations at startup, fileConfig would disable every
+# existing logger (mcp.*, uvicorn) and silence the server for its lifetime.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
 # Set the database URL from our settings
