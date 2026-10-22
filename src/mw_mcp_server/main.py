@@ -116,6 +116,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Database tables initialized")
 
         alembic_cfg = AlembicConfig("alembic.ini")
+        # Keep the app's logging; see migrations/env.py.
+        alembic_cfg.attributes["configure_logger"] = False
         await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
         logger.info("Database migrations completed")
     except Exception as e:
